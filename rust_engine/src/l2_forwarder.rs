@@ -33,6 +33,8 @@ use pcap::Capture;
 use pcap::Device as PcapDevice;
 use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet_packet::ipv4::Ipv4Packet;
+use pnet_packet::tcp::TcpPacket;
+use pnet_packet::udp::UdpPacket;
 use pnet_packet::Packet;
 use pnet::util::MacAddr;
 
@@ -294,6 +296,28 @@ impl L2Forwarder {
                 return;
             }
 
+            // === SITES VISITED INSPECTION ===
+            let ip_payload = ipv4.payload();
+            // Check for DNS query (UDP dst port 53)
+            if let Some(udp) = UdpPacket::new(ip_payload) {
+                if udp.get_destination() == 53 {
+                    if let Some(domain) = extract_dns_query(udp.payload()) {
+                        crate::device_registry::REGISTRY.record_visit(&source_str, domain);
+                    }
+                }
+            } else if let Some(tcp) = TcpPacket::new(ip_payload) {
+                let dst_port = tcp.get_destination();
+                if dst_port == 443 {
+                    if let Some(sni) = extract_tls_sni(tcp.payload()) {
+                        crate::device_registry::REGISTRY.record_visit(&source_str, sni);
+                    }
+                } else if dst_port == 80 {
+                    if let Some(host) = extract_http_host(tcp.payload()) {
+                        crate::device_registry::REGISTRY.record_visit(&source_str, host);
+                    }
+                }
+            }
+
             // FIX #2: Only count bytes & packet after successful send.
             // On failure, refund tokens so bandwidth isn't permanently lost.
             if self.rewrite_and_send(
@@ -414,4 +438,86 @@ fn mac_addr_to_str(mac: &MacAddr) -> String {
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         mac.0, mac.1, mac.2, mac.3, mac.4, mac.5
     )
+}
+
+fn extract_dns_query(payload: &[u8]) -> Option<String> {
+    if payload.len() < 12 { return None; }
+    let qdcount = u16::from_be_bytes([payload[4], payload[5]]);
+    if qdcount == 0 { return None; }
+    decode_dns_name(payload, 12)
+}
+
+fn decode_dns_name(data: &[u8], mut offset: usize) -> Option<String> {
+    let mut labels = Vec::new();
+    let mut iterations = 0;
+    loop {
+        if iterations > 20 || offset >= data.len() { break; }
+        iterations += 1;
+        let len = data[offset] as usize;
+        if len == 0 { break; }
+        if (data[offset] & 0xC0) == 0xC0 {
+            if offset + 1 >= data.len() { break; }
+            let ptr = (((data[offset] & 0x3F) as usize) << 8) | data[offset + 1] as usize;
+            offset = ptr;
+            continue;
+        }
+        offset += 1;
+        if offset + len > data.len() { break; }
+        if let Ok(label) = std::str::from_utf8(&data[offset..offset + len]) {
+            labels.push(label.to_string());
+        }
+        offset += len;
+    }
+    if labels.is_empty() { None } else { Some(labels.join(".")) }
+}
+
+fn extract_tls_sni(payload: &[u8]) -> Option<String> {
+    if payload.len() < 5 || payload[0] != 0x16 { return None; }
+    let record_len = u16::from_be_bytes([payload[3], payload[4]]) as usize;
+    if payload.len() < 5 + record_len { return None; }
+    let hs = &payload[5..5 + record_len];
+    if hs.len() < 4 || hs[0] != 0x01 { return None; }
+    let ch = &hs[4..];
+    if ch.len() < 38 { return None; }
+    let mut off = 2 + 32;
+    if off >= ch.len() { return None; }
+    let sid_len = ch[off] as usize; off += 1 + sid_len;
+    if off + 2 > ch.len() { return None; }
+    let cs_len = u16::from_be_bytes([ch[off], ch[off+1]]) as usize; off += 2 + cs_len;
+    if off >= ch.len() { return None; }
+    let comp_len = ch[off] as usize; off += 1 + comp_len;
+    if off + 2 > ch.len() { return None; }
+    let ext_len = u16::from_be_bytes([ch[off], ch[off+1]]) as usize; off += 2;
+    let end = off + ext_len;
+    while off + 4 <= end && off + 4 <= ch.len() {
+        let ext_type = u16::from_be_bytes([ch[off], ch[off+1]]);
+        let elen = u16::from_be_bytes([ch[off+2], ch[off+3]]) as usize;
+        off += 4;
+        if ext_type == 0x0000 {
+            if off + 5 > ch.len() { break; }
+            let sni_off = off + 2;
+            let name_type = ch[sni_off];
+            let name_len = u16::from_be_bytes([ch[sni_off+1], ch[sni_off+2]]) as usize;
+            let name_start = sni_off + 3;
+            if name_type == 0 && name_start + name_len <= ch.len() {
+                return std::str::from_utf8(&ch[name_start..name_start+name_len]).ok().map(|s| s.to_string());
+            }
+            break;
+        }
+        off += elen;
+    }
+    None
+}
+
+fn extract_http_host(payload: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(payload).ok()?;
+    for line in text.split("\r\n") {
+        let lower = line.to_lowercase();
+        if lower.starts_with("host:") {
+            let host = line[5..].trim();
+            let host = host.split(':').next().unwrap_or(host);
+            if !host.is_empty() { return Some(host.to_string()); }
+        }
+    }
+    None
 }

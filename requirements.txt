@@ -1,0 +1,5 @@
+psutil
+netifaces
+getmac
+scapy
+aiohttp

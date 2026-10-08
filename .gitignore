@@ -2,5 +2,13 @@ netctrl_config.json
 __pycache__/
 *.pyc
 rust_engine/target/
+target/
 rust_engine.exe
 *.exe
+build/
+build_pkg/
+dist/
+dist_release/
+*.spec
+.vscode/
+.idea/

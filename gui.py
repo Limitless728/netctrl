@@ -124,9 +124,9 @@ def _load_device_names() -> dict[str, str]:
     try:
         with open(json_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        by_ip = data.get("by_ip", {})
+        by_ip = data.get("by_ip", data) if "by_ip" in data else data
         if isinstance(by_ip, dict):
-            return {str(k): str(v) for k, v in by_ip.items()}
+            return {str(k): str(v) for k, v in by_ip.items() if k != "by_ip"}
         return {}
     except Exception:
         return {}
@@ -210,43 +210,47 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def _on_closing(self):
-        """Graceful shutdown: send ARP restore for every monitored device, then kill engine."""
+        """Graceful shutdown: restore ARP for all devices, then cleanly terminate engine."""
         print("\n[GUI] Window close requested – initiating graceful shutdown...")
         self._set_status("Shutting down: sending ARP restores to all monitored devices...")
-        # Force immediate UI update so the user sees the status
         self.update_idletasks()
 
-        # 1) Request ARP restore for every currently-monitored device
-        restored_count = 0
-        for mac, iid in list(self._row_for_mac.items()):
-            if not self.tree.exists(iid):
-                continue
-            vals = self.tree.item(iid, "values")
-            if not vals or len(vals) < 6:
-                continue
-            if vals[5] == "☑":  # is_monitored
-                try:
-                    _http_post("/api/monitor", {"mac": mac, "is_monitored": False})
-                    restored_count += 1
-                    print(f"[GUI] ARP restore sent for {mac}")
-                except Exception as e:
-                    print(f"[GUI] !! ARP restore failed for {mac}: {e}")
+        # 1) Restore ARP for ALL monitored devices atomically via /api/restore-all
+        try:
+            resp = _http_post("/api/restore-all", {}, timeout=3.0)
+            print(f"[GUI] ARP restore-all sent: {resp}")
+        except Exception as e:
+            print(f"[GUI] /api/restore-all failed or engine unreachable: {e}")
+            # Fallback: try individual /api/monitor calls using correct index 6
+            for mac, iid in list(self._row_for_mac.items()):
+                if not self.tree.exists(iid):
+                    continue
+                vals = self.tree.item(iid, "values")
+                if not vals or len(vals) < 7:
+                    continue
+                if vals[6] == "☑":  # is_monitored is at index 6
+                    try:
+                        _http_post("/api/monitor", {"mac": mac, "is_monitored": False}, timeout=1.0)
+                    except Exception:
+                        pass
 
-        print(f"[GUI] Restored {restored_count} device(s). Waiting 2s for packets to transmit...")
-        self._set_status(f"Restored {restored_count} device(s). Waiting 2s for ARP transmit...")
+        # 2) Wait 2 seconds for the ARP packets to actually transmit onto the network wire
+        print("[GUI] Waiting 2s for ARP restore packets to transmit on the wire...")
+        self._set_status("Waiting 2s for ARP transmit...")
         self.update_idletasks()
-
-        # 2) Wait 2 seconds – give the Rust spoofer time to actually transmit
-        #    the gratuitous ARP restore packets onto the wire.
         time.sleep(2)
 
-        # 3) Kill the hidden Rust engine process
+        # 3) Cleanly terminate the Rust engine process
         if self._rust_process is not None:
             try:
-                self._rust_process.kill()
+                self._rust_process.terminate()
+                try:
+                    self._rust_process.wait(timeout=1.0)
+                except Exception:
+                    self._rust_process.kill()
                 print("[GUI] Rust engine process terminated.")
             except Exception as e:
-                print(f"[GUI] !! Failed to kill rust engine: {e}")
+                print(f"[GUI] !! Failed to stop rust engine: {e}")
 
         # 4) Destroy window and exit
         print("[GUI] Shutdown complete. Goodbye.")
@@ -293,7 +297,7 @@ class App(tk.Tk):
         self._update_header(local_ip, local_mac, gateway_ip, gateway_mac)
 
         # --- Treeview ------------------------------------------------
-        cols = ("name", "ip", "mac", "dl", "ul", "total", "monitor", "block", "speed")
+        cols = ("name", "ip", "mac", "dl", "ul", "total", "monitor", "block", "speed", "sites")
         self.tree = ttk.Treeview(self, columns=cols, show="headings",
                                  selectmode="browse")
         self.tree.heading("name",    text="Name")
@@ -305,6 +309,7 @@ class App(tk.Tk):
         self.tree.heading("monitor", text="Monitor")
         self.tree.heading("block",   text="Block")
         self.tree.heading("speed",   text="Speed Limit")
+        self.tree.heading("sites",   text="Sites")
 
         self.tree.column("name",    width=130, anchor="w")
         self.tree.column("ip",      width=105, anchor="w")
@@ -315,11 +320,14 @@ class App(tk.Tk):
         self.tree.column("monitor", width=70, anchor="center")
         self.tree.column("block",   width=60, anchor="center")
         self.tree.column("speed",   width=110, anchor="center")
+        self.tree.column("sites",   width=60, anchor="center")
 
         self.tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
 
-        # Click-to-toggle on the Monitor column
+        # Click handlers
         self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<Double-1>", self._on_tree_double_click)
+        self.tree.bind("<Button-3>", self._on_tree_right_click)
 
         # --- Status bar ---------------------------------------------
         self.status = tk.Label(self, text="Starting…",
@@ -385,12 +393,14 @@ class App(tk.Tk):
             check = "☑" if d["is_monitored"] else "☐"
             block = "🚫" if d.get("is_blocked", False) else "✓"
             speed_str = f"{d.get('speed_limit_kbps', 'N/A')} KB/s" if d.get("speed_limit_kbps") else "Unlimited"
+            sites_text = "Sites"
             total_bytes = d.get("total_ul_bytes", 0) + d.get("total_dl_bytes", 0)
             # For local device, show N/A for controls
             if is_local:
                 check = "—"
                 block = "—"
                 speed_str = "—"
+                sites_text = "—"
 
             values = (
                 name,
@@ -402,6 +412,7 @@ class App(tk.Tk):
                 check,
                 block,
                 speed_str,
+                sites_text,
             )
             iid = self._row_for_mac.get(mac)
             if iid is None or not self.tree.exists(iid):
@@ -446,7 +457,13 @@ class App(tk.Tk):
             return
         mac = vals[2]
 
-        # Disable all controls for local device
+        # Column #1 = Rename device (available for all devices including local)
+        if col == "#1":
+            print(f"[GUI] rename clicked for mac={mac}")
+            self._show_rename_dialog(mac, vals[1], vals[0])
+            return
+
+        # Disable network controls for local device
         # Local device row has "—" in the monitor column (index 6)
         if vals[6] == "—":
             return
@@ -479,6 +496,104 @@ class App(tk.Tk):
         elif col == "#9":
             print(f"[GUI] speed limit clicked for mac={mac}")
             self._show_speed_dialog(mac, vals[8])
+
+        # Column #10 = Sites Visited popup
+        elif col == "#10":
+            print(f"[GUI] sites clicked for mac={mac}")
+            self._show_sites_window(mac)
+
+    def _on_tree_double_click(self, event):
+        row_iid = self.tree.identify_row(event.y)
+        if not row_iid:
+            return
+        vals = self.tree.item(row_iid, "values")
+        if not vals:
+            return
+        self._show_rename_dialog(vals[2], vals[1], vals[0])
+
+    def _on_tree_right_click(self, event):
+        row_iid = self.tree.identify_row(event.y)
+        if not row_iid:
+            return
+        self.tree.selection_set(row_iid)
+        vals = self.tree.item(row_iid, "values")
+        if not vals:
+            return
+        mac = vals[2]
+        ip = vals[1]
+        name = vals[0]
+        is_local = vals[6] == "—"
+
+        menu = tk.Menu(self, tearoff=0, bg="#2a2a30", fg="#e6e6e6",
+                       activebackground="#4a90e2", activeforeground="#ffffff")
+        menu.add_command(label=f"Rename '{name}'",
+                         command=lambda: self._show_rename_dialog(mac, ip, name))
+        if not is_local:
+            menu.add_separator()
+            menu.add_command(label="View Visited Sites",
+                             command=lambda: self._show_sites_window(mac))
+            menu.add_command(label="Set Speed Limit",
+                             command=lambda: self._show_speed_dialog(mac, vals[8]))
+            current_blocked = vals[7] == "🚫"
+            menu.add_command(label="Unblock Device" if current_blocked else "Block Device",
+                             command=lambda: threading.Thread(target=self._post_block, args=(mac, not current_blocked), daemon=True).start())
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _show_rename_dialog(self, mac: str, ip: str, current_name: str):
+        import tkinter.simpledialog as simpledialog
+        prompt = f"Enter friendly name for {ip} ({mac}):"
+        new_name = simpledialog.askstring("Rename Device", prompt, initialvalue=current_name)
+        if new_name is None:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+
+        print(f"[GUI] Renaming {mac} ({ip}) -> {new_name}")
+        # 1. Update in backend via API
+        threading.Thread(target=self._post_set_name, args=(mac, new_name), daemon=True).start()
+
+        # 2. Save persistently to device_names.json
+        self._save_device_name(ip, new_name)
+
+        # 3. Optimistic UI update
+        iid = self._row_for_mac.get(mac)
+        if iid and self.tree.exists(iid):
+            vals = list(self.tree.item(iid, "values"))
+            vals[0] = new_name
+            self.tree.item(iid, values=vals)
+
+    def _post_set_name(self, mac: str, name: str):
+        try:
+            resp = _http_post("/api/set-name", {"mac": mac, "display_name": name})
+            print(f"[GUI] /api/set-name response: {resp}")
+            self._set_status(f"Renamed {mac} to '{name}'")
+        except Exception as e:
+            print(f"[ERROR] _post_set_name {mac}: {e!r}", file=sys.stderr)
+            self._set_status(f"Rename failed for {mac}: {e}")
+
+    @staticmethod
+    def _save_device_name(ip: str, name: str):
+        if getattr(sys, "frozen", False):
+            base_path = os.path.dirname(sys.executable)
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(base_path, "device_names.json")
+        try:
+            data = {}
+            if os.path.isfile(json_path):
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            by_ip = data.setdefault("by_ip", {})
+            by_ip[ip] = name
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            print(f"[GUI] Saved device name for {ip} to {json_path}")
+        except Exception as e:
+            print(f"[GUI] Failed to save device name to {json_path}: {e}")
 
     def _post_toggle(self, mac: str, monitored: bool):
         try:
@@ -554,6 +669,194 @@ class App(tk.Tk):
         except Exception as e:
             print(f"[ERROR] _post_speed_limit {mac}: {e!r}", file=sys.stderr)
             self._set_status(f"speed limit update failed for {mac}: {e}")
+
+    def _show_sites_window(self, mac: str):
+        """Open a Toplevel window showing visited sites for a device."""
+        popup = tk.Toplevel(self)
+        popup.title(f"Sites Visited – {mac}")
+        popup.geometry("620x460")
+        popup.configure(bg="#1e1e22")
+        popup.transient(self)
+
+        # --- Style for this popup (dark theme matching main window) ---
+        style = ttk.Style(popup)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Sites.Treeview",
+                        background="#2a2a30",
+                        foreground="#e6e6e6",
+                        fieldbackground="#2a2a30",
+                        rowheight=24,
+                        borderwidth=0)
+        style.configure("Sites.Treeview.Heading",
+                        background="#3a3a44",
+                        foreground="#ffffff",
+                        font=("Segoe UI", 10, "bold"))
+        style.map("Sites.Treeview",
+                  background=[("selected", "#4a90e2")])
+
+        # --- Top info bar ---
+        top = tk.Frame(popup, bg="#1e1e22")
+        top.pack(fill="x", padx=10, pady=(8, 4))
+
+        tk.Label(top, text=f"Visited sites for {mac}",
+                 fg="#e6e6e6", bg="#1e1e22",
+                 font=("Segoe UI", 11, "bold")).pack(side="left")
+
+        count_label = tk.Label(top, text="Loading...",
+                               fg="#9aa0a6", bg="#1e1e22",
+                               font=("Segoe UI", 9))
+        count_label.pack(side="right")
+
+        # --- Search / Filter bar ---
+        search_frame = tk.Frame(popup, bg="#1e1e22")
+        search_frame.pack(fill="x", padx=10, pady=(0, 6))
+
+        tk.Label(search_frame, text="Filter: ", fg="#9aa0a6", bg="#1e1e22",
+                 font=("Segoe UI", 9)).pack(side="left")
+
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(search_frame, textvariable=search_var,
+                                bg="#2a2a30", fg="#ffffff",
+                                insertbackground="white", relief="flat",
+                                font=("Segoe UI", 9))
+        search_entry.pack(side="left", fill="x", expand=True)
+
+        # --- Treeview ---
+        sites_cols = ("domain", "time")
+        sites_tree = ttk.Treeview(popup, columns=sites_cols, show="headings",
+                                  selectmode="browse", style="Sites.Treeview")
+        sites_tree.heading("domain", text="Domain")
+        sites_tree.heading("time", text="Time")
+        sites_tree.column("domain", width=360, anchor="w")
+        sites_tree.column("time", width=200, anchor="w")
+        sites_tree.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+
+        # Scrollbar
+        vsb = ttk.Scrollbar(popup, orient="vertical", command=sites_tree.yview)
+        sites_tree.configure(yscrollcommand=vsb.set)
+        vsb.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne",
+                   x=-10, y=78, height=-140)
+
+        # --- Bottom button bar ---
+        bottom = tk.Frame(popup, bg="#1e1e22")
+        bottom.pack(fill="x", padx=10, pady=(4, 8))
+
+        # Cached visits for client-side search filtering
+        popup_state = {"visits": []}
+
+        clear_btn = tk.Button(
+            bottom, text="Clear History",
+            command=lambda: self._on_clear_sites(mac, sites_tree, popup, count_label, popup_state),
+            bg="#d9534f", fg="white",
+            activebackground="#c9302c", activeforeground="white",
+            relief="flat", padx=12, pady=5,
+            font=("Segoe UI", 10, "bold"))
+        clear_btn.pack(side="left")
+
+        def _copy_domain():
+            sel = sites_tree.selection()
+            if sel:
+                val = sites_tree.item(sel[0], "values")
+                if val:
+                    popup.clipboard_clear()
+                    popup.clipboard_append(val[0])
+                    self._set_status(f"Copied domain to clipboard: {val[0]}")
+
+        copy_btn = tk.Button(
+            bottom, text="Copy Domain",
+            command=_copy_domain,
+            bg="#3a3a44", fg="white",
+            activebackground="#4a4a54", activeforeground="white",
+            relief="flat", padx=12, pady=5,
+            font=("Segoe UI", 10))
+        copy_btn.pack(side="left", padx=6)
+
+        close_btn = tk.Button(
+            bottom, text="Close",
+            command=popup.destroy,
+            bg="#4a4a4a", fg="white",
+            activebackground="#5a5a5a", activeforeground="white",
+            relief="flat", padx=12, pady=5,
+            font=("Segoe UI", 10))
+        close_btn.pack(side="right")
+
+        def _render_tree():
+            if not sites_tree.winfo_exists():
+                return
+            query = search_var.get().strip().lower()
+            for item in sites_tree.get_children():
+                sites_tree.delete(item)
+            shown = 0
+            for v in reversed(popup_state["visits"]):
+                domain = v.get("domain", "")
+                if query and query not in domain.lower():
+                    continue
+                ts = v.get("timestamp", 0.0)
+                import datetime
+                time_str = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                sites_tree.insert("", "end", values=(domain, time_str))
+                shown += 1
+            if count_label.winfo_exists():
+                total = len(popup_state["visits"])
+                if query:
+                    count_label.config(text=f"{shown} / {total} entries")
+                else:
+                    count_label.config(text=f"{total} entries")
+
+        search_var.trace_add("write", lambda *_: _render_tree())
+
+        # --- Auto-refresh state ---
+        cancel_refresh = threading.Event()
+        popup.protocol("WM_DELETE_WINDOW", lambda: (cancel_refresh.set(), popup.destroy()))
+
+        def _fetch_worker():
+            try:
+                resp = _http_get(f"/api/sites/{mac}", timeout=3.0)
+            except Exception as e:
+                print(f"[GUI] _fetch_sites {mac}: {e!r}", file=sys.stderr)
+                return
+            if resp.get("ok"):
+                popup_state["visits"] = resp.get("visits", [])
+                self.after(0, _render_tree)
+
+        # Initial fetch
+        threading.Thread(target=_fetch_worker, daemon=True).start()
+
+        # Refresh loop (every 3 seconds)
+        def _auto_refresh():
+            if cancel_refresh.is_set():
+                return
+            threading.Thread(target=_fetch_worker, daemon=True).start()
+            if popup.winfo_exists():
+                popup.after(3000, _auto_refresh)
+
+        popup.after(3000, _auto_refresh)
+
+    def _on_clear_sites(self, mac: str, sites_tree: ttk.Treeview, popup: tk.Toplevel, count_label: tk.Label, popup_state: dict):
+        """Clear all sites for a device via API."""
+        import tkinter.messagebox as messagebox
+        if not messagebox.askyesno("Confirm", f"Clear all visited sites history for {mac}?", parent=popup):
+            return
+        print(f"[GUI] Clearing sites for {mac}")
+        def _go():
+            try:
+                resp = _http_post(f"/api/sites/{mac}/clear", {}, timeout=3.0)
+                print(f"[GUI] /api/sites/{mac}/clear response: {resp}")
+                self._set_status(f"Sites history cleared for {mac}")
+                popup_state["visits"] = []
+                def _done():
+                    for item in sites_tree.get_children():
+                        sites_tree.delete(item)
+                    if count_label.winfo_exists():
+                        count_label.config(text="0 entries")
+                self.after(0, _done)
+            except Exception as e:
+                print(f"[ERROR] _post_clear_sites {mac}: {e!r}", file=sys.stderr)
+                self._set_status(f"clear sites failed for {mac}: {e}")
+        threading.Thread(target=_go, daemon=True).start()
 
     def _on_rescan(self):
         print("[GUI] Rescan clicked")

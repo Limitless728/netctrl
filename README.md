@@ -36,8 +36,10 @@ Download the installer from [npcap.com](https://npcap.com) and run it. During in
 ### Step 2 — Install Python dependencies
 
 ```bash
-pip install scapy psutil requests customtkinter
+pip install -r requirements.txt
 ```
+
+*(Or manually: `pip install psutil netifaces getmac scapy aiohttp`)*
 
 ### Step 3 — Build the Rust engine
 

@@ -2,10 +2,16 @@
 //! ==================
 //! Thread-safe state management for discovered LAN devices.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::Instant;
+
+#[derive(Debug, Default)]
+pub struct VisitedSitesTracker {
+    pub history: VecDeque<(String, f64)>,
+    pub last_seen_by_domain: HashMap<String, f64>,
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Device {
@@ -51,6 +57,7 @@ struct DeviceInner {
     last_token_update: Instant,
     first_seen: Instant,
     last_seen: Instant,
+    visited_sites: Mutex<VisitedSitesTracker>,
 }
 
 pub struct DeviceRegistry {
@@ -109,6 +116,7 @@ impl DeviceRegistry {
             last_token_update: now,
             first_seen: now,
             last_seen: now,
+            visited_sites: Mutex::new(VisitedSitesTracker::default()),
         };
 
         println!(
@@ -366,6 +374,64 @@ impl DeviceRegistry {
     // Internal helpers
     // ------------------------------------------------------------------
 
+    pub fn record_visit(&self, mac: &str, raw_domain: String) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let domain = match clean_and_filter_domain(&raw_domain) {
+            Some(d) => d,
+            None => return,
+        };
+        let mac_lower = mac.to_lowercase();
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+
+        // READ lock on devices map: does not block forwarder hot path!
+        let devices = self.devices.read().unwrap();
+        if let Some(d) = devices.get(&mac_lower) {
+            let mut tracker = d.visited_sites.lock().unwrap();
+            // Debounce: ignore same domain within 30 seconds
+            if let Some(&last_ts) = tracker.last_seen_by_domain.get(&domain) {
+                if (ts - last_ts) < 30.0 {
+                    return;
+                }
+            }
+            tracker.last_seen_by_domain.insert(domain.clone(), ts);
+            tracker.history.push_back((domain, ts));
+            if tracker.history.len() > 500 {
+                if let Some((old_domain, _)) = tracker.history.pop_front() {
+                    // Clean up tracking map if old entry is aged
+                    if let Some(&old_ts) = tracker.last_seen_by_domain.get(&old_domain) {
+                        if (ts - old_ts) > 60.0 {
+                            tracker.last_seen_by_domain.remove(&old_domain);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn get_visits(&self, mac: &str) -> Vec<(String, f64)> {
+        let mac_lower = mac.to_lowercase();
+        let devices = self.devices.read().unwrap();
+        if let Some(d) = devices.get(&mac_lower) {
+            let tracker = d.visited_sites.lock().unwrap();
+            tracker.history.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn clear_visits(&self, mac: &str) {
+        let mac_lower = mac.to_lowercase();
+        let devices = self.devices.read().unwrap();
+        if let Some(d) = devices.get(&mac_lower) {
+            let mut tracker = d.visited_sites.lock().unwrap();
+            tracker.history.clear();
+            tracker.last_seen_by_domain.clear();
+        }
+    }
+
     fn to_device_snapshot(&self, d: &DeviceInner) -> Device {
         Device {
             ip: d.ip.clone(),
@@ -390,3 +456,31 @@ impl DeviceRegistry {
 
 pub static REGISTRY: once_cell::sync::Lazy<DeviceRegistry> =
     once_cell::sync::Lazy::new(DeviceRegistry::new);
+
+fn clean_and_filter_domain(raw: &str) -> Option<String> {
+    let d = raw.trim().trim_end_matches('.').to_lowercase();
+    if d.is_empty() || d.len() < 3 || d.len() > 253 {
+        return None;
+    }
+    // Must contain ASCII characters, dots, or hyphens
+    if !d.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return None;
+    }
+    // Filter out internal / noisy domains
+    if d.ends_with(".in-addr.arpa")
+        || d.ends_with(".ip6.arpa")
+        || d.ends_with(".arpa")
+        || d.ends_with(".local")
+        || d.ends_with(".lan")
+        || d.ends_with(".home")
+        || d.ends_with(".internal")
+        || d.starts_with('_')
+        || d == "wpad"
+        || d == "connectivitycheck.gstatic.com"
+        || d == "msftconnecttest.com"
+        || d == "dns.google"
+    {
+        return None;
+    }
+    Some(d)
+}

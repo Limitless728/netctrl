@@ -9,7 +9,6 @@ def _require_admin():
         )
         sys.exit(0)
 
-_require_admin()
 
 """
 main.py
@@ -32,9 +31,11 @@ Network interface selection:
   - The selection is saved to netctrl_config.json for subsequent runs.
 """
 
+import ipaddress
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -53,9 +54,9 @@ from gui import run_gui
 # (They are NOT needed when the Rust binary handles everything.)
 try:
     from device_registry import REGISTRY
-    from l2_capture import L2Forwarder, speed_ticker_thread
-    from scanner import Scanner
-    from server import api_server
+    from l2_capture import L2Forwarder
+    from scanner import Scanner, speed_ticker_thread
+    import server as api_server
     from spoofer import Spoofer
     PYTHON_ENGINE_AVAILABLE = True
 except ImportError as e:
@@ -115,6 +116,41 @@ def save_interface_config(iface: str) -> None:
 # ----------------------------------------------------------------------
 # Context detection
 # ----------------------------------------------------------------------
+def _get_mac_from_arp(ip: str) -> Optional[str]:
+    """Resolve MAC address from Windows ARP cache using `arp -a {ip}`.
+    Optionally sends a quick 1-ping warmup if not already cached.
+    """
+    for attempt in range(2):
+        try:
+            out = subprocess.check_output(f"arp -a {ip}", shell=True, text=True, stderr=subprocess.DEVNULL)
+            for line in out.splitlines():
+                line = line.strip()
+                if ip in line:
+                    m = re.search(r"([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}", line)
+                    if m:
+                        mac = m.group(0).replace("-", ":").lower()
+                        if mac not in ("ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"):
+                            return mac
+        except Exception:
+            pass
+        if attempt == 0:
+            try:
+                subprocess.run(f"ping -n 1 -w 300 {ip}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+    try:
+        from getmac import get_mac_address
+        m = get_mac_address(ip=ip, network_request=False)
+        if m:
+            m = m.replace("-", ":").lower()
+            if m not in ("ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"):
+                return m
+    except Exception:
+        pass
+    return None
+
+
 def _get_local_mac(ip: str) -> str:
     """Return the MAC address of *this* machine's interface holding the
     given IPv4 address, or '??:??:??:??:??:??' if unavailable.
@@ -123,94 +159,142 @@ def _get_local_mac(ip: str) -> str:
         import psutil
         addrs = psutil.net_if_addrs()
         for ifname, snics in addrs.items():
+            has_ip = False
+            found_mac = None
             for snic in snics:
-                if snic.family == socket.AF_INET:
-                    if snic.address == ip:
-                        # scan same interface for the AF_LINK / MAC
-                        for s2 in snics:
-                            if s2.family.value == 17:  # AF_LINK on macOS / Linux
-                                mac = s2.address.replace("-", ":").lower()
-                                if mac and mac != "00:00:00:00:00:00":
-                                    return mac
-                            elif s2.family.name == "AF_LINK":
-                                mac = s2.address.replace("-", ":").lower()
-                                if mac and mac != "00:00:00:00:00:00":
-                                    return mac
-                        # Windows fallback: AF_PACKET not exposed by psutil;
-                        # use getmac.get_mac_address()
-                        try:
-                            from getmac import get_mac_address
-                            m = get_mac_address(ip=ip, network_request=False)
-                            if m:
-                                return m.replace("-", ":").lower()
-                        except ImportError:
-                            # try win32 APIs directly
-                            try:
-                                import os as _os
-                                output = _os.popen(f"arp -a {ip}").read()
-                                # very rough parse – last resort
-                            except Exception:
-                                pass
-    except ImportError:
+                if snic.family == socket.AF_INET and snic.address == ip:
+                    has_ip = True
+                elif hasattr(snic, "family") and (getattr(snic.family, "value", None) == 17 or "AF_LINK" in str(snic.family) or "AF_PACKET" in str(snic.family) or snic.family == -1):
+                    addr_clean = snic.address.replace("-", ":").lower()
+                    if addr_clean and addr_clean != "00:00:00:00:00:00":
+                        found_mac = addr_clean
+            if has_ip and found_mac:
+                return found_mac
+    except Exception:
         pass
+
+    arp_mac = _get_mac_from_arp(ip)
+    if arp_mac:
+        return arp_mac
     return "??:??:??:??:??:??"
 
 
-def detect_context() -> dict:
+def detect_context(target_iface: Optional[str] = None) -> dict:
     """Auto-detect the local IP, local MAC, gateway IP, gateway MAC,
     and network interface name using the system's route table and
-    ARP cache.
+    ARP cache. Guarantees that the gateway IP belongs to the local subnet,
+    filtering out VPN / secondary tunnel gateways.
 
     Returns a dictionary with keys: iface, local_ip, local_mac,
-    gateway_ip, gateway_mac, netmask.
+    gateway_ip, gateway_mac, netmask, subnet.
     """
-    import netifaces  # cross-platform route/gateway info
+    import psutil
+    import netifaces
 
-    gw = netifaces.gateways()
-    default = gw.get("default", {})
-    iface = None
+    addrs = psutil.net_if_addrs()
+    stats = psutil.net_if_stats()
+
+    iface = target_iface
     local_ip = None
-    gateway_ip = None
     netmask = "255.255.255.0"
+    local_mac = "??:??:??:??:??:??"
 
-    if netifaces.AF_INET in default:
-        (_gateway_ip, iface) = default[netifaces.AF_INET]
-        gateway_ip = _gateway_ip
-        try:
-            addrs = netifaces.ifaddresses(iface)
-            ipv4 = addrs[netifaces.AF_INET][0]
-            local_ip = ipv4.get("addr", "127.0.0.1")
-            netmask = ipv4.get("netmask", "255.255.255.0")
-        except Exception:
-            local_ip = "127.0.0.1"
+    # 1. If no target interface, attempt to match default route interface from netifaces
+    if not iface:
+        default_gw = netifaces.gateways().get("default", {}).get(netifaces.AF_INET)
+        if default_gw:
+            gw_ip, gw_guid = default_gw
+            try:
+                guid_addrs = netifaces.ifaddresses(gw_guid).get(netifaces.AF_INET, [])
+                if guid_addrs:
+                    def_ip = guid_addrs[0].get("addr")
+                    for iname, snics in addrs.items():
+                        for s in snics:
+                            if s.family == socket.AF_INET and s.address == def_ip:
+                                iface = iname
+                                local_ip = s.address
+                                if s.netmask:
+                                    netmask = s.netmask
+                                break
+                        if iface:
+                            break
+            except Exception:
+                pass
 
-    if gateway_ip is None:
-        # fallback — scan netiface data
-        for gateways in gw.values():
-            for proto, entries in gateways.items():
-                if entries:
-                    if isinstance(entries, list):
-                        e = entries[0]
-                    elif isinstance(entries, dict):
-                        e = entries
-                    else:
-                        continue
-                    gateway_ip = e
+    # 2. If target interface specified or matched, extract IP, netmask, MAC
+    if iface and iface in addrs:
+        for s in addrs[iface]:
+            if s.family == socket.AF_INET and not s.address.startswith("127."):
+                local_ip = s.address
+                if s.netmask:
+                    netmask = s.netmask
+            elif hasattr(s, "family") and (getattr(s, "value", None) == 17 or "AF_LINK" in str(s.family) or "AF_PACKET" in str(s.family) or s.family == -1):
+                c_mac = s.address.replace("-", ":").lower()
+                if c_mac and c_mac != "00:00:00:00:00:00":
+                    local_mac = c_mac
 
-    if local_ip is None:
+    # 3. Fallback: pick the first active non-virtual interface with valid IPv4
+    if not local_ip:
+        for iname, snics in addrs.items():
+            if iname in stats and not stats[iname].isup:
+                continue
+            lower_name = iname.lower()
+            if any(skip in lower_name for skip in ["vmware", "virtualbox", "vbox", "loopback", "pseudo", "tap", "vpn"]):
+                continue
+            for s in snics:
+                if s.family == socket.AF_INET and not s.address.startswith("127.") and not s.address.startswith("169.254."):
+                    iface = iname
+                    local_ip = s.address
+                    if s.netmask:
+                        netmask = s.netmask
+                    break
+            if local_ip:
+                break
+
+    if not local_ip:
         local_ip = socket.gethostbyname(socket.gethostname())
 
-    gateway_mac = "??:??:??:??:??:??"
-    if gateway_ip:
+    if local_mac == "??:??:??:??:??:??":
+        local_mac = _get_local_mac(local_ip)
+
+    # 4. Calculate local subnet network
+    try:
+        local_net = ipaddress.IPv4Network(f"{local_ip}/{netmask}", strict=False)
+    except Exception:
+        local_net = ipaddress.IPv4Network("192.168.1.0/24")
+
+    parts = local_ip.split(".")
+    subnet = f"{parts[0]}.{parts[1]}.{parts[2]}" if len(parts) >= 3 else "192.168.1"
+
+    # 5. Find Gateway IP strictly within the local subnet
+    gw_info = netifaces.gateways()
+    candidate_gateways = []
+    for g_entry in gw_info.get(netifaces.AF_INET, []):
+        if isinstance(g_entry, (list, tuple)) and len(g_entry) >= 1:
+            candidate_gateways.append(g_entry[0])
+        elif isinstance(g_entry, str):
+            candidate_gateways.append(g_entry)
+
+    valid_gw = []
+    for c_gw in candidate_gateways:
         try:
-            from getmac import get_mac_address
-            gm = get_mac_address(ip=gateway_ip, network_request=False)
-            if gm:
-                gateway_mac = gm.replace("-", ":").lower()
+            if ipaddress.IPv4Address(c_gw) in local_net and c_gw != local_ip:
+                valid_gw.append(c_gw)
         except Exception:
             pass
 
-    local_mac = _get_local_mac(local_ip)
+    if valid_gw:
+        gateway_ip = valid_gw[0]
+    else:
+        # Standard default gateway heuristic for LANs (.1)
+        gateway_ip = f"{subnet}.1"
+
+    # 6. Resolve Gateway MAC
+    gateway_mac = "??:??:??:??:??:??"
+    if gateway_ip:
+        resolved_mac = _get_mac_from_arp(gateway_ip)
+        if resolved_mac:
+            gateway_mac = resolved_mac
 
     return {
         "iface": iface,
@@ -219,6 +303,7 @@ def detect_context() -> dict:
         "gateway_ip": gateway_ip,
         "gateway_mac": gateway_mac,
         "netmask": netmask,
+        "subnet": subnet,
     }
 
 
@@ -447,9 +532,8 @@ def main():
             print("[MAIN] FATAL: Could not determine network interface. Exiting.")
             sys.exit(1)
     else:
-        # Use the selected interface but still detect other context info
-        ctx = detect_context()
-        ctx["iface"] = selected_iface
+        # Use the selected interface to detect matching IP, gateway, and MAC
+        ctx = detect_context(selected_iface)
 
     spoofer = None
     forwarder = None
@@ -478,6 +562,7 @@ def main():
                     "--mac", ctx["local_mac"],
                     "--gateway-ip", ctx["gateway_ip"],
                     "--gateway-mac", ctx["gateway_mac"],
+                    "--subnet", ctx.get("subnet", "192.168.1"),
                     "--listen", "127.0.0.1:8765",
                 ],
                 creationflags=creationflags,
@@ -515,6 +600,7 @@ def main():
                                         "--mac", ctx["local_mac"],
                                         "--gateway-ip", ctx["gateway_ip"],
                                         "--gateway-mac", ctx["gateway_mac"],
+                                        "--subnet", ctx.get("subnet", "192.168.1"),
                                         "--listen", "127.0.0.1:8765",
                                     ],
                                     creationflags=0x08000000 if sys.platform == "win32" else 0,
@@ -629,4 +715,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _require_admin()
     main()

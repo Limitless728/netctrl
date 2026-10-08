@@ -16,7 +16,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -111,6 +111,8 @@ pub async fn run_server(
         .route("/api/speed", post(handle_speed))
         .route("/api/restore-all", post(handle_restore_all))
         .route("/api/set-name", post(handle_set_name))
+        .route("/api/sites/:mac", get(handle_get_sites))
+        .route("/api/sites/:mac/clear", post(handle_clear_sites))
         .layer(axum::middleware::from_fn(log_requests))
         .layer(cors)
         .with_state(shared);
@@ -398,5 +400,45 @@ async fn handle_set_name(
     (
         StatusCode::OK,
         Json(serde_json::json!({"ok": true, "mac": mac, "display_name": name})),
+    )
+}
+
+async fn handle_get_sites(
+    State(_state): State<Arc<AppState>>,
+    Path(mac): Path<String>,
+) -> impl IntoResponse {
+    let mac = mac.to_lowercase();
+    println!("[SERVER] GET /api/sites/{}", mac);
+    if REGISTRY.get_by_mac(&mac).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"ok": false, "error": format!("unknown mac {}", mac)})),
+        );
+    }
+    let visits = REGISTRY.get_visits(&mac);
+    let visits_json: Vec<_> = visits
+        .iter()
+        .map(|(domain, ts)| serde_json::json!({"domain": domain, "timestamp": ts}))
+        .collect();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true,
+            "mac": mac,
+            "visits": visits_json,
+        })),
+    )
+}
+
+async fn handle_clear_sites(
+    State(_state): State<Arc<AppState>>,
+    Path(mac): Path<String>,
+) -> impl IntoResponse {
+    let mac = mac.to_lowercase();
+    println!("[SERVER] POST /api/sites/{}/clear", mac);
+    REGISTRY.clear_visits(&mac);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"ok": true, "mac": mac})),
     )
 }

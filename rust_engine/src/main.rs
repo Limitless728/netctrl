@@ -300,8 +300,8 @@ async fn main() {
             Ok(gw_mac) => gw_mac,
             Err(e) => {
                 eprintln!("[MAIN] !! Gateway MAC resolution failed: {}", e);
-                eprintln!("[MAIN]    Please provide --gateway-mac manually or ensure gateway is reachable.");
-                return;
+                eprintln!("[MAIN]    Using fallback broadcast MAC ff:ff:ff:ff:ff:ff so engine and REST API continue running.");
+                "ff:ff:ff:ff:ff:ff".to_string()
             }
         }
     } else {
@@ -309,8 +309,8 @@ async fn main() {
             Ok(gw_mac) => gw_mac,
             Err(e) => {
                 eprintln!("[MAIN] !! Gateway MAC resolution failed: {}", e);
-                eprintln!("[MAIN]    Please provide --gateway-mac manually or ensure gateway is reachable.");
-                return;
+                eprintln!("[MAIN]    Using fallback broadcast MAC ff:ff:ff:ff:ff:ff so engine and REST API continue running.");
+                "ff:ff:ff:ff:ff:ff".to_string()
             }
         }
     };
