@@ -23,12 +23,27 @@ const VENDOR_PREFIXES = {
   // Apple
   "00:17:f2": { name: "Apple", icon: "🍎" },
   "ac:de:48": { name: "Apple", icon: "🍎" },
-  "dc:fb:48": { name: "Intel / PC", icon: "💻" },
   "00:1c:b3": { name: "Apple", icon: "🍎" },
   "bc:d0:74": { name: "Apple", icon: "🍎" },
   "f4:5c:89": { name: "Apple", icon: "🍎" },
   "34:08:bc": { name: "Apple", icon: "🍎" },
   "b8:78:2e": { name: "Apple", icon: "🍎" },
+  "a4:83:e7": { name: "Apple", icon: "🍎" },
+  "e0:c7:67": { name: "Apple", icon: "🍎" },
+  "f0:18:98": { name: "Apple", icon: "🍎" },
+  "d0:25:98": { name: "Apple", icon: "🍎" },
+  "c8:2a:14": { name: "Apple", icon: "🍎" },
+  "b0:34:95": { name: "Apple", icon: "🍎" },
+  "98:01:a7": { name: "Apple", icon: "🍎" },
+  "88:66:5a": { name: "Apple", icon: "🍎" },
+  "7c:6d:62": { name: "Apple", icon: "🍎" },
+  "40:6c:8f": { name: "Apple", icon: "🍎" },
+  "3c:15:c2": { name: "Apple", icon: "🍎" },
+  "28:cf:e9": { name: "Apple", icon: "🍎" },
+  "20:a2:e4": { name: "Apple", icon: "🍎" },
+  "18:af:61": { name: "Apple", icon: "🍎" },
+  "08:66:98": { name: "Apple", icon: "🍎" },
+
   // Samsung
   "00:12:fb": { name: "Samsung", icon: "📱" },
   "2c:0e:3d": { name: "Samsung", icon: "📱" },
@@ -36,43 +51,153 @@ const VENDOR_PREFIXES = {
   "80:20:fd": { name: "Samsung", icon: "📱" },
   "94:f6:f2": { name: "Samsung", icon: "📱" },
   "e4:7c:f9": { name: "Samsung", icon: "📱" },
-  // Xiaomi
+  "08:08:c2": { name: "Samsung", icon: "📱" },
+  "14:49:e0": { name: "Samsung", icon: "📱" },
+  "1c:5a:3e": { name: "Samsung", icon: "📱" },
+  "38:0b:40": { name: "Samsung", icon: "📱" },
+  "44:4e:1a": { name: "Samsung", icon: "📱" },
+  "50:01:d9": { name: "Samsung", icon: "📱" },
+  "68:eb:ae": { name: "Samsung", icon: "📱" },
+  "78:47:1d": { name: "Samsung", icon: "📱" },
+  "8c:77:12": { name: "Samsung", icon: "📱" },
+  "a0:0b:ba": { name: "Samsung", icon: "📱" },
+  "b4:07:c6": { name: "Samsung", icon: "📱" },
+  "c4:73:1e": { name: "Samsung", icon: "📱" },
+  "cc:07:ab": { name: "Samsung", icon: "📱" },
+  "d0:59:e4": { name: "Samsung", icon: "📱" },
+  "fc:a1:3e": { name: "Samsung", icon: "📱" },
+
+  // Xiaomi / Redmi / POCO
   "28:6c:07": { name: "Xiaomi", icon: "📱" },
   "34:80:0d": { name: "Xiaomi", icon: "📱" },
   "64:cc:2e": { name: "Xiaomi", icon: "📱" },
   "74:23:44": { name: "Xiaomi", icon: "📱" },
+  "7c:49:eb": { name: "Xiaomi", icon: "📱" },
+  "8c:be:be": { name: "Xiaomi", icon: "📱" },
+  "98:fa:e3": { name: "Xiaomi", icon: "📱" },
+  "ac:c1:ee": { name: "Xiaomi", icon: "📱" },
+  "b0:e5:ed": { name: "Xiaomi", icon: "📱" },
+  "c4:0b:d0": { name: "Xiaomi", icon: "📱" },
+  "e4:aa:ea": { name: "Xiaomi", icon: "📱" },
+
+  // Oppo / Realme / OnePlus
+  "1c:77:f6": { name: "Oppo", icon: "📱" },
+  "24:e2:71": { name: "Oppo", icon: "📱" },
+  "50:8f:4c": { name: "Realme / Oppo", icon: "📱" },
+  "78:02:f8": { name: "OnePlus", icon: "📱" },
+  "80:35:c1": { name: "Oppo", icon: "📱" },
+  "a0:93:47": { name: "OnePlus", icon: "📱" },
+  "c0:bf:be": { name: "Realme", icon: "📱" },
+  "e0:dc:ff": { name: "Oppo", icon: "📱" },
+  "f4:60:e2": { name: "OnePlus", icon: "📱" },
+
+  // Vivo / iQOO
+  "20:5e:64": { name: "Vivo", icon: "📱" },
+  "30:c7:50": { name: "Vivo", icon: "📱" },
+  "48:8a:d2": { name: "Vivo", icon: "📱" },
+  "58:24:29": { name: "Vivo", icon: "📱" },
+  "7c:1c:f1": { name: "Vivo", icon: "📱" },
+  "80:ea:07": { name: "Vivo", icon: "📱" },
+  "b4:99:ba": { name: "Vivo", icon: "📱" },
+  "cc:2d:8c": { name: "Vivo", icon: "📱" },
+
   // Huawei / Honor
   "00:e0:fc": { name: "Huawei", icon: "📱" },
   "48:d8:39": { name: "Huawei", icon: "📱" },
+  "20:08:89": { name: "Huawei", icon: "📱" },
+  "40:4d:8e": { name: "Huawei", icon: "📱" },
+  "54:89:98": { name: "Honor", icon: "📱" },
+  "70:72:3c": { name: "Huawei", icon: "📱" },
+  "88:cf:98": { name: "Huawei", icon: "📱" },
+  "ac:e8:7b": { name: "Honor", icon: "📱" },
+  "c8:d1:5e": { name: "Huawei", icon: "📱" },
+
   // Intel
-  "00:1b:21": { name: "Intel", icon: "💻" },
-  "08:84:fb": { name: "Intel", icon: "💻" },
-  "24:77:03": { name: "Intel", icon: "💻" },
-  // Realtek
-  "00:e0:4c": { name: "Realtek", icon: "💻" },
+  "00:1b:21": { name: "Intel / PC", icon: "💻" },
+  "08:84:fb": { name: "Intel / PC", icon: "💻" },
+  "24:77:03": { name: "Intel / PC", icon: "💻" },
+  "dc:fb:48": { name: "Intel / PC", icon: "💻" },
+  "00:0e:0c": { name: "Intel / PC", icon: "💻" },
+  "00:13:02": { name: "Intel / PC", icon: "💻" },
+
+  // Realtek & VM
+  "00:e0:4c": { name: "Realtek / PC", icon: "💻" },
+  "00:07:0d": { name: "Realtek / PC", icon: "💻" },
   "52:54:00": { name: "QEMU / VM", icon: "🖥️" },
+  "08:00:27": { name: "VirtualBox VM", icon: "🖥️" },
+  "00:0c:29": { name: "VMware", icon: "🖥️" },
+
+  // Dell / HP / Lenovo / Asus / Microsoft
+  "00:14:22": { name: "Dell PC", icon: "💻" },
+  "24:b6:fd": { name: "Dell PC", icon: "💻" },
+  "34:17:eb": { name: "Dell PC", icon: "💻" },
+  "00:1e:0b": { name: "HP PC", icon: "💻" },
+  "10:60:4b": { name: "HP PC", icon: "💻" },
+  "3c:d9:2b": { name: "HP PC", icon: "💻" },
+  "08:3e:8e": { name: "Lenovo PC", icon: "💻" },
+  "28:b2:bd": { name: "Lenovo PC", icon: "💻" },
+  "54:ee:75": { name: "Lenovo PC", icon: "💻" },
+  "04:d9:f5": { name: "Asus PC", icon: "💻" },
+  "10:bf:48": { name: "Asus PC", icon: "💻" },
+  "7c:1e:52": { name: "Microsoft Surface", icon: "💻" },
+  "28:18:78": { name: "Microsoft / Xbox", icon: "🎮" },
+
   // TP-Link
   "14:cc:20": { name: "TP-Link", icon: "📶" },
   "50:c7:bf": { name: "TP-Link", icon: "📶" },
-  "b4:b0:24": { name: "Router", icon: "🌐" },
+  "b4:b0:24": { name: "TP-Link Router", icon: "🌐" },
   "c0:06:c3": { name: "TP-Link", icon: "📶" },
-  // Espressif / IoT
+  "30:b5:c2": { name: "TP-Link", icon: "📶" },
+  "60:32:b1": { name: "TP-Link", icon: "📶" },
+  "98:48:27": { name: "TP-Link", icon: "📶" },
+  "ec:08:6b": { name: "TP-Link", icon: "📶" },
+
+  // D-Link / Netgear / Tenda
+  "00:17:9a": { name: "D-Link", icon: "🌐" },
+  "1c:7e:e5": { name: "D-Link", icon: "🌐" },
+  "20:e5:2a": { name: "Netgear", icon: "🌐" },
+  "2c:30:33": { name: "Netgear", icon: "🌐" },
+  "c8:3a:35": { name: "Tenda Router", icon: "🌐" },
+
+  // Espressif / Tuya Smart Home
   "18:fe:34": { name: "Espressif IoT", icon: "💡" },
   "24:6f:28": { name: "Espressif IoT", icon: "💡" },
   "30:ae:a4": { name: "Smart Device", icon: "💡" },
-  // Google
+  "3c:71:bf": { name: "Espressif IoT", icon: "💡" },
+  "84:0d:8e": { name: "Smart Plug / Light", icon: "💡" },
+  "bc:dd:c2": { name: "Espressif IoT", icon: "💡" },
+  "10:2c:6b": { name: "Tuya Smart", icon: "💡" },
+  "50:8a:06": { name: "Tuya Smart", icon: "💡" },
+  "7c:f6:66": { name: "Tuya Smart", icon: "💡" },
+
+  // Google / Amazon / Smart TV
   "d8:6c:63": { name: "Google", icon: "📱" },
   "70:3a:cb": { name: "Google Nest", icon: "🔊" },
-  // Sony
+  "54:60:09": { name: "Google Chromecast", icon: "📺" },
+  "68:37:e9": { name: "Amazon Echo", icon: "🔊" },
+  "74:75:48": { name: "Amazon Fire TV", icon: "📺" },
+  "84:d6:d0": { name: "Amazon Device", icon: "📦" },
+
+  // Gaming Consoles
   "00:13:15": { name: "Sony / PlayStation", icon: "🎮" },
   "f8:46:1c": { name: "PlayStation", icon: "🎮" },
+  "70:9e:29": { name: "PlayStation 5", icon: "🎮" },
+  "9c:e6:35": { name: "Nintendo Switch", icon: "🎮" },
+  "dc:68:eb": { name: "Nintendo Switch", icon: "🎮" },
 };
 
 function getVendorInfo(mac) {
   if (!mac) return { name: "Device", icon: "💻" };
-  const prefix = mac.toLowerCase().substring(0, 8);
+  const lower = mac.toLowerCase();
+  const prefix = lower.substring(0, 8);
   if (VENDOR_PREFIXES[prefix]) {
     return VENDOR_PREFIXES[prefix];
+  }
+  // Check if MAC is Locally Administered / Randomized (Private Wi-Fi Address on phones/PCs)
+  // IEEE 802 standard: Bit 1 of byte 0 set -> 2nd hex character is 2, 6, A, or E
+  const secondChar = lower.charAt(1);
+  if (secondChar === "2" || secondChar === "6" || secondChar === "a" || secondChar === "e") {
+    return { name: "Private / Phone", icon: "📱" };
   }
   return { name: "LAN Device", icon: "💻" };
 }
@@ -563,11 +688,12 @@ function openSpeedLimitModal(device) {
     b.classList.toggle("active", sp === (device.speed_limit_kbps || 0));
   });
 
-  modal.classList.remove("hidden");
+  modal.classList.add("is-open");
 }
 
 function closeSpeedLimitModal() {
-  document.getElementById("speedModal").classList.add("hidden");
+  const modal = document.getElementById("speedModal");
+  modal.classList.remove("is-open");
   currentSelectedMacForSpeed = null;
 }
 
@@ -595,15 +721,20 @@ async function openSitesDrawer(device) {
   currentSelectedMacForSites = device.mac;
   const drawer = document.getElementById("sitesDrawer");
   document.getElementById("sitesDrawerSubtitle").textContent = `${device.display_name || device.name} • ${device.ip}`;
-  drawer.classList.remove("hidden");
+  drawer.classList.add("is-open");
 
   await loadSitesForDevice(device.mac);
 }
 
 function closeSitesDrawer() {
-  document.getElementById("sitesDrawer").classList.add("hidden");
+  const drawer = document.getElementById("sitesDrawer");
+  drawer.classList.remove("is-open");
   currentSelectedMacForSites = null;
-  currentSitesList = [];
+  setTimeout(() => {
+    if (!drawer.classList.contains("is-open")) {
+      currentSitesList = [];
+    }
+  }, 400);
 }
 
 async function loadSitesForDevice(mac) {
@@ -803,10 +934,10 @@ document.addEventListener("DOMContentLoaded", () => {
   // Global Escape key listener to dismiss open modal/drawer
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (!speedModal.classList.contains("hidden")) {
+      if (speedModal.classList.contains("is-open")) {
         closeSpeedLimitModal();
       }
-      if (!sitesDrawer.classList.contains("hidden")) {
+      if (sitesDrawer.classList.contains("is-open")) {
         closeSitesDrawer();
       }
     }
