@@ -686,7 +686,7 @@ def main():
     print("[MAIN] all subsystems up – launching modern dashboard UI")
 
     try:
-        if "--legacy-gui" in sys.argv:
+        if "--legacy-gui" in sys.argv or "--classic-gui" in sys.argv:
             run_gui(
                 local_ip      = ctx["local_ip"],
                 local_mac     = ctx["local_mac"],

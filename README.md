@@ -1,134 +1,214 @@
-# NetCtrl
+# NetCtrl Pro
 
-**Layer-2 LAN Bandwidth Manager**
+**High-Performance Layer-2 LAN Bandwidth Manager & ARP Controller**
 
-![Python 3.x](https://img.shields.io/badge/Python-3.x-blue) ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange) ![Windows](https://img.shields.io/badge/Windows-10%2F11-blue) ![Npcap](https://img.shields.io/badge/Npcap-required-green)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Rust 1.70+](https://img.shields.io/badge/Rust-1.70+-DEA584?logo=rust&logoColor=white)](https://rustup.rs)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?logo=windows&logoColor=white)](https://microsoft.com)
+[![Npcap Required](https://img.shields.io/badge/Npcap-Required-2ea043)](https://npcap.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-![NetCtrl GUI](screenshot.png)
+NetCtrl is a modern Layer-2 network management and bandwidth control suite designed for local area networks (LAN). Utilizing high-performance ARP spoofing and packet filtering, NetCtrl allows network administrators to monitor real-time traffic per host, inspect visited domains, enforce bandwidth speed limits, or completely block network access.
 
-## What it does
+---
 
-NetCtrl is a Layer-2 bandwidth management tool that uses ARP spoofing to intercept LAN traffic passing between devices on your local network and the gateway. It provides real-time download and upload speed monitoring for every device, lets you block devices from accessing the internet entirely, apply custom speed limits (in KB/s), and track cumulative total usage per device — all from a clean graphical interface.
+## 🎨 Dual User Interface Experience
 
-## ⚠️ Legal & Ethical Notice
+NetCtrl provides **two user interface modes** suited for different workflows:
 
-This tool is intended for **educational and personal network use only**. You should only use NetCtrl on networks that you own or have explicit permission to manage. Unauthorized interception of network traffic may violate local laws and regulations. The authors assume no liability for misuse.
+### 1. Modern Cyber Dark Dashboard (Default)
+A fluid, modern UI powered by PyWebView featuring hardware-accelerated animations, live traffic sparklines, automated vendor logo badges, visited sites drawer, and preset rate limits.
 
-## Requirements
+![NetCtrl Modern Cyber Dashboard](Screenshot_NewGui.png)
 
-- **Windows 10/11**
-- **Python 3.10+**
-- **Npcap** ([https://npcap.com](https://npcap.com)) — must be installed before running
-- **Rust toolchain** ([https://rustup.rs](https://rustup.rs)) — only needed to build from source
-- **Visual Studio Build Tools** 
-  ([download](https://visualstudio.microsoft.com/visual-cpp-build-tools/)) 
-  — select "Desktop development with C++" during install. 
-  Required to compile the Rust engine.
+* **Real-time Sparklines:** 60 FPS live activity graph per connected device.
+* **Smart Vendor Detection:** Automatically identifies device manufacturers (Apple, Samsung, Xiaomi, TP-Link, Intel, Dell, etc.) and detects randomized MAC addresses (`Private / Phone 📱`).
+* **Visited Websites Drawer:** Smooth sliding side-drawer displaying captured DNS requests per device in real time, with instant domain search and one-click copy.
+* **Speed Limiter Presets:** Modal dialog with quick bandwidth presets (64 KB/s, 128 KB/s, 256 KB/s, 1 MB/s, Unlimited) and custom rate input.
+* **One-Click Emergency Restore:** Top-bar "Restore All" button to instantly un-monitor, unblock, and heal the entire network's ARP tables.
+* **Inline Renaming:** Double-click or click ✏️ to customize device names with instant persistent JSON storage.
 
-## Installation & Setup
+---
 
-### Step 1 — Install Npcap
+### 2. Classic Lightweight GUI (Tkinter)
+A minimalist, zero-overhead desktop window designed for quick diagnostics and ultra-low system resource consumption.
 
-Download the installer from [npcap.com](https://npcap.com) and run it. During installation, make sure to check:
+![NetCtrl Classic GUI](screenshot.png)
 
-> **"Install Npcap in WinPcap API-compatible Mode"**
+---
 
-### Step 2 — Install Python dependencies
+## ⚡ How to Switch Between Interfaces
 
+### Running the Pre-compiled Standalone Executable (`NetCtrl.exe`):
+
+```bash
+# Launch Modern Cyber Dashboard (Default):
+NetCtrl.exe
+
+# Launch Classic Lightweight GUI:
+NetCtrl.exe --classic-gui
+# (or NetCtrl.exe --legacy-gui)
+```
+
+### Running from Python Source:
+
+```bash
+# Launch Modern Cyber Dashboard (Default):
+python main.py --rust
+
+# Launch Classic Lightweight GUI:
+python main.py --rust --classic-gui
+```
+
+---
+
+## 🚀 Key Features
+
+* **Subnet-Aware Discovery:** Broadcast ARP scanning tailored to your actual subnet mask (e.g. `/24`), preventing interference with VPN virtual adapters.
+* **Dual Architecture Engine:**
+  * **Rust High-Throughput Engine:** Token-bucket rate limiting, sub-millisecond layer-2 packet forwarding, zero packet drops under load.
+  * **Python Fallback Engine:** Pure-Python implementation if running without the compiled binary.
+* **Local HTTP REST API:** Rust backend operates on `http://127.0.0.1:8765`, enabling scriptable network control and dashboard communication.
+* **DNS Inspection & Domain Logging:** Inspects outgoing port 53 DNS queries to provide a visited website history per target host.
+* **Automatic Gateway & Local Host Protection:** Your local machine is permanently identified, pinned at the top, and protected against accidental blocking or rate-limiting.
+
+---
+
+## 📋 Requirements
+
+* **Operating System:** Windows 10 or Windows 11 (64-bit)
+* **Administrator Privileges:** Required for raw packet capture and ARP transmission.
+* **Npcap Driver:** Must be installed on the machine ([Download Npcap](https://npcap.com)).
+
+---
+
+## 📥 Installation & Setup
+
+### Step 1: Install Npcap (Crucial)
+1. Download the latest installer from [npcap.com](https://npcap.com).
+2. During setup, make sure to check:
+   > ☑️ **"Install Npcap in WinPcap API-compatible Mode"**
+
+---
+
+### Option A — Run the Portable Executable (Recommended)
+
+No Python or Rust installation is needed.
+
+1. Download or locate `NetCtrl.exe` in the `dist/` folder.
+2. Right-click and choose **Run as administrator** (or double-click; it will automatically request UAC elevation).
+3. On first launch, select your active network interface (Wi-Fi or Ethernet).
+
+---
+
+### Option B — Run or Build from Source
+
+#### 1. Clone the repository:
+```bash
+git clone https://github.com/Ahmed-Eissa-0/NetCtrl.git
+cd NetCtrl
+```
+
+#### 2. Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-*(Or manually: `pip install psutil netifaces getmac scapy aiohttp pywebview`)*
-
-### Step 3 — Build the Rust engine
-
+#### 3. Compile the Rust Engine:
+Make sure you have [Rust installed](https://rustup.rs) and Visual Studio C++ Build Tools.
 ```bash
 cd rust_engine
 cargo build --release
 copy target\release\rust_engine.exe ..\rust_engine.exe
+cd ..
 ```
 
-### Step 4 — Configure device names (optional)
-
-Edit `device_names.json` to map IP addresses to friendly names, or rename devices directly from the UI with a double-click.
-
-### Step 5 — Run (as Administrator)
-
+#### 4. Launch NetCtrl:
 ```bash
-# Launch with Modern Cyber Dashboard (default):
+# Run with Modern Dashboard:
 python main.py --rust
 
-# Or launch with classic legacy Tkinter GUI:
-python main.py --rust --legacy-gui
+# Run with Classic GUI:
+python main.py --rust --classic-gui
 ```
 
-On first run, a dialog will appear asking you to select your network interface. Choose the interface connected to your LAN (WiFi or Ethernet). The selection is saved to `netctrl_config.json` for future runs.
+---
 
-## 🔧 Build as Standalone EXE (Optional)
+## 📦 Building Standalone Single EXE
 
-If you want a single double-clickable `.exe` that bundles everything:
+To bundle everything (Python code, Rust engine, Web dashboard assets, and icons) into a single standalone `dist/NetCtrl.exe`:
 
-### Prerequisites
-- Rust toolchain installed ([rustup.rs](https://rustup.rs))
-- Python 3.10+ with pip
-
-### Steps
-
-Simply run the provided build script:
-
+Simply run:
 ```bat
 build_exe.bat
 ```
 
-This will:
-1. Compile the Rust engine (`cargo build --release`)
-2. Install PyInstaller if not already installed
-3. Bundle everything into a single `dist/NetCtrl.exe`
+Or manually using PyInstaller:
+```bash
+pyinstaller --onefile --noconsole --uac-admin \
+  --add-data "rust_engine.exe;." \
+  --add-data "device_names.json;." \
+  --add-data "web;web" \
+  --icon icon.ico \
+  --workpath build_pkg \
+  --distpath dist \
+  --exclude-module matplotlib \
+  --exclude-module pygame \
+  --exclude-module PIL \
+  --exclude-module IPython \
+  --clean \
+  --name "NetCtrl" \
+  main.py
+```
 
-### Run
-Double-click `dist/NetCtrl.exe` — it will automatically request Administrator privileges.
-No Python or Rust installation required on the target machine.
+---
 
-> **Note:** Windows Defender or antivirus may flag the EXE due to network packet capture capabilities. This is a false positive — you can whitelist it or build from source to verify.
-
-## Features
-
-- Real-time DL/UL speed monitoring per device
-- Block internet access for any device
-- Set custom speed limits (KB/s)
-- Cumulative total usage tracking per device
-- Automatic device name resolution (`device_names.json` → NetBIOS → mDNS → MAC)
-- Your own device shown at top, protected from accidental blocking
-- Interface selector on first run
-
-## Project Structure
+## 📁 Project Architecture
 
 ```
 netctrl/
-├── main.py                    # Entry point, launches Rust engine
-├── gui.py                     # Tkinter GUI
-├── device_names.json          # Your custom device name mappings
-├── rust_engine/
-│   ├── src/
-│   │   ├── main.rs            # Rust entry point
-│   │   ├── server.rs          # HTTP API server
-│   │   ├── scanner.rs         # ARP network scanner
-│   │   ├── spoofer.rs         # ARP poisoning engine
-│   │   ├── l2_forwarder.rs    # Packet forwarding + rate limiting
-│   │   └── device_registry.rs # Device state management
-│   └── Cargo.toml
+├── main.py                    # Application entrypoint & engine coordinator
+├── gui_web.py                 # PyWebView bridge for modern dashboard
+├── gui.py                     # Classic native Tkinter GUI
+├── device_names.json          # Persistent custom device name mappings
+├── requirements.txt           # Python dependencies
+├── build_exe.bat              # One-click Windows build script
+├── screenshot.png             # Classic GUI screenshot
+├── Screenshot_NewGui.png      # Modern Dashboard screenshot
+├── web/                       # Modern Cyber Dark Dashboard
+│   ├── index.html             # Semantic dashboard markup
+│   ├── style.css              # Cyber dark responsive styles & transitions
+│   └── app.js                 # REST client, live polling, sparkline canvas
+└── rust_engine/               # High-performance Rust L2 Core
+    ├── Cargo.toml
+    └── src/
+        ├── main.rs            # Rust engine startup & CLI
+        ├── server.rs          # Axum HTTP REST server (:8765)
+        ├── l2_forwarder.rs    # Layer-2 forwarding & token-bucket rate limiter
+        ├── spoofer.rs         # Raw ARP poisoning & healing routines
+        ├── scanner.rs         # Active broadcast subnet ARP scanner
+        └── device_registry.rs # Thread-safe concurrent device & DNS records
 ```
 
-## How it works
+---
 
-NetCtrl uses ARP spoofing to position itself between LAN devices and the gateway. Once positioned, all traffic flows through the host machine, which enables full monitoring and control. The Rust engine handles high-speed packet forwarding with token bucket rate limiting for precise bandwidth control. The Python GUI communicates with the Rust engine over a local HTTP API running on port 8765.
+## ❓ Troubleshooting
 
-## Troubleshooting
+| Issue | Cause & Solution |
+|---|---|
+| **Gateway MAC shows `--` or `??`** | Make sure you are running as **Administrator**. NetCtrl needs raw socket access. |
+| **No devices discovered** | Click **Rescan LAN**. Ensure you picked the correct network interface during initial setup. You can reset your interface in `netctrl_config.json`. |
+| **"Npcap not found" / Packet errors** | Reinstall Npcap from [npcap.com](https://npcap.com) and ensure **"WinPcap API-compatible Mode"** is checked. |
+| **Antivirus false positive** | Because NetCtrl crafts low-level ARP frames for network administration, some heuristics may flag the standalone executable. This is normal for network tools like Wireshark/SelfishNet. Add `NetCtrl.exe` to exclusions or build from source. |
 
-| Problem | Solution |
-|---------|----------|
-| "No module named netifaces" | `pip install netifaces` |
-| Gateway MAC shows ?? | Run as Administrator |
-| Block / speed limit not working | Run as Administrator + ensure Npcap is installed |
-| Devices not appearing | Run Rescan, check interface selection |
+---
+
+## ⚠️ Legal & Ethical Disclaimer
+
+NetCtrl is developed for **network administration, performance diagnostics, and educational research only**. Intercepting or modifying network traffic on networks without explicit authorization from the network owner is illegal in many jurisdictions. The developers assume no liability for misuse of this software.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).

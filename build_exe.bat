@@ -88,8 +88,12 @@ pyinstaller --onefile --noconsole --uac-admin ^
     --name "NetCtrl" ^
     main.py
 
+if not exist dist mkdir dist
+copy /Y dist_release\NetCtrl.exe dist\NetCtrl.exe >nul 2>&1
+if exist build_pkg rmdir /s /q build_pkg >nul 2>&1
+
 echo ============================================================
-echo  Done! Find NetCtrl.exe in the dist_release/ folder.
+echo  Done! Find NetCtrl.exe in dist/ or dist_release/ folder.
 echo  Run NetCtrl.exe as Administrator.
 echo ============================================================
 pause
