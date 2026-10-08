@@ -76,6 +76,7 @@ if exist icon.ico set "ICON_ARG=--icon icon.ico"
 pyinstaller --onefile --noconsole --uac-admin ^
     --add-data "rust_engine.exe;." ^
     --add-data "device_names.json;." ^
+    --add-data "web;web" ^
     %ICON_ARG% ^
     --workpath build_pkg ^
     --distpath dist_release ^

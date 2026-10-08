@@ -3,3 +3,4 @@ netifaces
 getmac
 scapy
 aiohttp
+pywebview

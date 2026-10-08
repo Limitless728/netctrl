@@ -39,7 +39,7 @@ Download the installer from [npcap.com](https://npcap.com) and run it. During in
 pip install -r requirements.txt
 ```
 
-*(Or manually: `pip install psutil netifaces getmac scapy aiohttp`)*
+*(Or manually: `pip install psutil netifaces getmac scapy aiohttp pywebview`)*
 
 ### Step 3 — Build the Rust engine
 
@@ -51,12 +51,16 @@ copy target\release\rust_engine.exe ..\rust_engine.exe
 
 ### Step 4 — Configure device names (optional)
 
-Edit `device_names.json` to map IP addresses to friendly names. The format is shown in the template file — simply add entries like `"192.168.1.42": "Living Room TV"`.
+Edit `device_names.json` to map IP addresses to friendly names, or rename devices directly from the UI with a double-click.
 
 ### Step 5 — Run (as Administrator)
 
 ```bash
+# Launch with Modern Cyber Dashboard (default):
 python main.py --rust
+
+# Or launch with classic legacy Tkinter GUI:
+python main.py --rust --legacy-gui
 ```
 
 On first run, a dialog will appear asking you to select your network interface. Choose the interface connected to your LAN (WiFi or Ethernet). The selection is saved to `netctrl_config.json` for future runs.

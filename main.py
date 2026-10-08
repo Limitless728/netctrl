@@ -47,8 +47,14 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any, Optional
 
-# ---- Pull gui module from the same directory ----
+# ---- GUI launchers ----
 from gui import run_gui
+try:
+    from gui_web import run_web_gui
+    HAS_WEB_GUI = True
+except ImportError:
+    run_web_gui = run_gui
+    HAS_WEB_GUI = False
 
 # ---- Conditionally import the Python-native engine components ----
 # (They are NOT needed when the Rust binary handles everything.)
@@ -677,18 +683,29 @@ def main():
         # tiny grace period so the API socket is bound before the GUI polls it
         time.sleep(0.4)
 
-    print("[MAIN] all subsystems up – launching GUI")
+    print("[MAIN] all subsystems up – launching modern dashboard UI")
 
     try:
-        run_gui(
-            local_ip    = ctx["local_ip"],
-            local_mac   = ctx["local_mac"],
-            gateway_ip  = ctx["gateway_ip"],
-            gateway_mac = ctx["gateway_mac"],
-            backend_label = backend_label,
-            rust_process = rust_process,
-            health_queue = health_queue,
-        )
+        if "--legacy-gui" in sys.argv:
+            run_gui(
+                local_ip      = ctx["local_ip"],
+                local_mac     = ctx["local_mac"],
+                gateway_ip    = ctx["gateway_ip"],
+                gateway_mac   = ctx["gateway_mac"],
+                backend_label = backend_label,
+                rust_process  = rust_process,
+                health_queue  = health_queue,
+            )
+        else:
+            run_web_gui(
+                local_ip      = ctx["local_ip"],
+                local_mac     = ctx["local_mac"],
+                gateway_ip    = ctx["gateway_ip"],
+                gateway_mac   = ctx["gateway_mac"],
+                backend_label = backend_label,
+                rust_process  = rust_process,
+                health_queue  = health_queue,
+            )
     except KeyboardInterrupt:
         print("[MAIN] Ctrl-C received")
     finally:

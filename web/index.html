@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NetCtrl – Layer-2 Network Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>NetCtrl <span>Pro</span></h1>
+          <div class="engine-badge" id="engineBadge">
+            <span class="status-dot pulsing"></span>
+            <span id="engineStatusText">Rust Engine Connected</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Metrics Header Cards -->
+      <div class="header-metrics">
+        <div class="metric-card">
+          <div class="metric-icon net-in">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M12 5v14M19 12l-7 7-7-7"/>
+            </svg>
+          </div>
+          <div class="metric-info">
+            <span class="metric-label">Total Download</span>
+            <span class="metric-value dl" id="totalDlSpeed">0.0 KB/s</span>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-icon net-out">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M12 19V5M5 12l7-7 7 7"/>
+            </svg>
+          </div>
+          <div class="metric-info">
+            <span class="metric-label">Total Upload</span>
+            <span class="metric-value ul" id="totalUlSpeed">0.0 KB/s</span>
+          </div>
+        </div>
+
+        <div class="metric-card gateway-card">
+          <div class="metric-icon gw">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+              <line x1="6" y1="6" x2="6.01" y2="6"/>
+              <line x1="6" y1="18" x2="6.01" y2="18"/>
+            </svg>
+          </div>
+          <div class="metric-info">
+            <span class="metric-label" id="ifaceLabel">Gateway (LAN)</span>
+            <span class="metric-value monospace" id="gatewayIpText">192.168.1.1</span>
+            <span class="metric-sub monospace" id="gatewayMacText">--:--:--:--:--:--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Actions -->
+      <div class="header-actions">
+        <button class="btn btn-primary" id="btnRescan" title="Rescan entire /24 subnet via ARP">
+          <svg class="spin-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+          </svg>
+          <span>Rescan LAN</span>
+        </button>
+
+        <button class="btn btn-danger-outline" id="btnRestoreAll" title="Emergency: Unmonitor and unblock all devices">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <span>Restore All</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="app-main">
+      <!-- Toolbar / Filters -->
+      <div class="toolbar">
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="searchInput" placeholder="Search by name, IP, or MAC address...">
+          <button id="searchClear" class="btn-clear hidden">&times;</button>
+        </div>
+
+        <div class="toolbar-stats">
+          <span class="stat-badge">Total Devices: <strong id="countTotal">0</strong></span>
+          <span class="stat-badge stat-monitored">Monitored: <strong id="countMonitored">0</strong></span>
+          <span class="stat-badge stat-blocked">Blocked: <strong id="countBlocked">0</strong></span>
+        </div>
+      </div>
+
+      <!-- Device Table Container -->
+      <div class="table-container">
+        <table class="device-table" id="deviceTable">
+          <thead>
+            <tr>
+              <th class="col-device">Device Name</th>
+              <th class="col-ip">IP Address</th>
+              <th class="col-mac">MAC Address</th>
+              <th class="col-speed">Live Speed</th>
+              <th class="col-graph">Activity</th>
+              <th class="col-total">Total Usage</th>
+              <th class="col-ctrl text-center">Monitor</th>
+              <th class="col-ctrl text-center">Block</th>
+              <th class="col-limit">Speed Limit</th>
+              <th class="col-sites text-center">Sites</th>
+            </tr>
+          </thead>
+          <tbody id="deviceTableBody">
+            <!-- Dynamically populated rows -->
+            <tr class="empty-placeholder">
+              <td colspan="10">
+                <div class="empty-state">
+                  <div class="spinner"></div>
+                  <p>Discovering LAN devices...</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- Bottom Status Bar -->
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span class="host-info">
+          <strong>This PC:</strong>
+          <span id="localIpText" class="monospace">--</span>
+          (<span id="localMacText" class="monospace">--</span>)
+        </span>
+      </div>
+      <div class="footer-right">
+        <span id="lastUpdatedText">Syncing...</span>
+        <span class="version-tag">NetCtrl v2.0 Pro</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Speed Limit Modal -->
+  <div class="modal-backdrop hidden" id="speedModal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Bandwidth Rate Limit</h3>
+        <button class="modal-close" id="btnSpeedModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="target-device-card">
+          <div class="target-name" id="speedModalDeviceName">Device Name</div>
+          <div class="target-ip monospace" id="speedModalDeviceIp">192.168.1.100</div>
+        </div>
+
+        <label class="modal-label">Choose Speed Limit Preset:</label>
+        <div class="speed-presets">
+          <button class="btn-preset" data-speed="0">Unlimited</button>
+          <button class="btn-preset" data-speed="64">64 KB/s</button>
+          <button class="btn-preset" data-speed="128">128 KB/s</button>
+          <button class="btn-preset" data-speed="256">256 KB/s</button>
+          <button class="btn-preset" data-speed="512">512 KB/s</button>
+          <button class="btn-preset" data-speed="1024">1 MB/s</button>
+        </div>
+
+        <div class="custom-speed-group">
+          <label for="customSpeedInput">Or Custom Speed (KB/s):</label>
+          <div class="input-with-addon">
+            <input type="number" id="customSpeedInput" min="1" max="100000" placeholder="e.g. 300">
+            <span class="addon">KB/s</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnSpeedCancel">Cancel</button>
+        <button class="btn btn-primary" id="btnSpeedApply">Apply Limit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Visited Sites Drawer Modal -->
+  <div class="drawer-backdrop hidden" id="sitesDrawer">
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <h3>Visited Websites</h3>
+          <span class="drawer-subtitle" id="sitesDrawerSubtitle">192.168.1.x</span>
+        </div>
+        <button class="drawer-close" id="btnSitesDrawerClose">&times;</button>
+      </div>
+
+      <div class="drawer-toolbar">
+        <div class="drawer-search">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="sitesSearchInput" placeholder="Filter domains...">
+        </div>
+        <div class="drawer-actions">
+          <button class="btn btn-sm btn-secondary" id="btnCopyAllDomains" title="Copy all visible domains">Copy All</button>
+          <button class="btn btn-sm btn-danger-outline" id="btnClearDomainHistory" title="Clear visit history">Clear</button>
+        </div>
+      </div>
+
+      <div class="drawer-content">
+        <ul class="sites-list" id="sitesList">
+          <li class="empty-sites">No DNS activity logged yet.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
