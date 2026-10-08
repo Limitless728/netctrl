@@ -16,6 +16,7 @@ let currentSelectedMacForSpeed = null;
 let currentSelectedMacForSites = null;
 let currentSitesList = [];
 let isScanning = false;
+let editingMac = null;
 
 // MAC OUI Vendor Prefix Lookup Table
 const VENDOR_PREFIXES = {
@@ -91,6 +92,15 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return "";
+  if (typeof ts === "number") {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  return String(ts);
 }
 
 // -----------------------------------------------------------------------------
@@ -217,11 +227,79 @@ function renderDevicesTable() {
     if (d.is_blocked) countBlocked++;
   });
 
-  document.getElementById("totalDlSpeed").textContent = formatSpeed(totalDl);
-  document.getElementById("totalUlSpeed").textContent = formatSpeed(totalUl);
-  document.getElementById("countTotal").textContent = devicesList.length;
-  document.getElementById("countMonitored").textContent = countMonitored;
-  document.getElementById("countBlocked").textContent = countBlocked;
+  const totalDlEl = document.getElementById("totalDlSpeed");
+  const totalUlEl = document.getElementById("totalUlSpeed");
+  const countTotalEl = document.getElementById("countTotal");
+  const countMonitoredEl = document.getElementById("countMonitored");
+  const countBlockedEl = document.getElementById("countBlocked");
+
+  if (totalDlEl) totalDlEl.textContent = formatSpeed(totalDl);
+  if (totalUlEl) totalUlEl.textContent = formatSpeed(totalUl);
+  if (countTotalEl) countTotalEl.textContent = devicesList.length;
+  if (countMonitoredEl) countMonitoredEl.textContent = countMonitored;
+  if (countBlockedEl) countBlockedEl.textContent = countBlocked;
+
+  // If a device name is currently being edited, do NOT touch table DOM to prevent interruption
+  if (editingMac !== null) {
+    return;
+  }
+
+  // Smooth in-place update if existing rows already match filtered list
+  const existingRows = Array.from(tbody.querySelectorAll("tr.device-row"));
+  const canUpdateInPlace =
+    existingRows.length === filtered.length &&
+    filtered.every((d, idx) => existingRows[idx] && existingRows[idx].dataset.mac === d.mac);
+
+  if (canUpdateInPlace) {
+    filtered.forEach((d, idx) => {
+      const row = existingRows[idx];
+      const totalBytes = (d.total_dl_bytes || 0) + (d.total_ul_bytes || 0);
+
+      row.classList.toggle("is-blocked", !!d.is_blocked);
+
+      const nameTextEl = row.querySelector(".device-name-text");
+      const vendor = getVendorInfo(d.mac);
+      const displayName = d.display_name || d.name || vendor.name;
+      if (nameTextEl && nameTextEl.textContent !== displayName) {
+        nameTextEl.textContent = displayName;
+      }
+
+      const dlSpan = row.querySelector(".speed-row.dl span");
+      if (dlSpan) dlSpan.textContent = formatSpeed(d.dl_speed);
+      const ulSpan = row.querySelector(".speed-row.ul span");
+      if (ulSpan) ulSpan.textContent = formatSpeed(d.ul_speed);
+
+      const canvas = row.querySelector(".sparkline-canvas");
+      if (canvas) {
+        updateSparkline(canvas, (d.dl_speed || 0) + (d.ul_speed || 0));
+      }
+
+      const totalSpan = row.querySelector(".total-usage-text");
+      if (totalSpan) totalSpan.textContent = formatBytes(totalBytes);
+
+      const monInput = row.querySelector(".toggle-switch.monitor input");
+      if (monInput && monInput.checked !== !!d.is_monitored) {
+        monInput.checked = !!d.is_monitored;
+      }
+
+      const blkInput = row.querySelector(".toggle-switch.block input");
+      if (blkInput && blkInput.checked !== !!d.is_blocked) {
+        blkInput.checked = !!d.is_blocked;
+      }
+
+      const limitBtn = row.querySelector(".speed-limit-badge");
+      if (limitBtn) {
+        const isLimited = d.speed_limit_kbps && d.speed_limit_kbps > 0;
+        const limitText = isLimited ? `${d.speed_limit_kbps} KB/s` : "Unlimited";
+        limitBtn.classList.toggle("limited", isLimited);
+        const span = limitBtn.querySelector("span");
+        if (span && span.textContent !== limitText) {
+          span.textContent = limitText;
+        }
+      }
+    });
+    return;
+  }
 
   tbody.innerHTML = "";
 
@@ -386,33 +464,41 @@ function renderDevicesTable() {
 // -----------------------------------------------------------------------------
 function startInlineRename(nameEl, mac) {
   if (!nameEl) return;
+  editingMac = mac;
   const currentText = nameEl.textContent;
   const input = document.createElement("input");
   input.type = "text";
   input.value = currentText;
   input.className = "inline-rename-input";
-  input.style.cssText = "background:var(--bg-primary);border:1px solid var(--border-focus);color:#fff;padding:2px 6px;border-radius:4px;font-size:12px;outline:none;";
+  input.style.cssText = "background:var(--bg-primary);border:1px solid var(--border-focus);color:#fff;padding:2px 6px;border-radius:4px;font-size:12px;outline:none;width:140px;";
 
   nameEl.replaceWith(input);
   input.focus();
   input.select();
 
-  const commit = async () => {
-    const val = input.value.trim();
-    if (val && val !== currentText) {
-      try {
-        await apiPost("/api/set-name", { mac: mac, display_name: val });
-        showToast(`Renamed to "${val}"`, "success");
-        // Update local object and bridge
-        const dev = devicesList.find((x) => x.mac === mac);
-        if (dev) {
-          dev.display_name = val;
-          if (window.pywebview && window.pywebview.api) {
-            window.pywebview.api.save_device_name(dev.ip, val).catch(() => {});
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    editingMac = null;
+
+    if (save) {
+      const val = input.value.trim();
+      if (val && val !== currentText) {
+        try {
+          await apiPost("/api/set-name", { mac: mac, display_name: val });
+          showToast(`Renamed to "${val}"`, "success");
+          // Update local object and bridge
+          const dev = devicesList.find((x) => x.mac === mac);
+          if (dev) {
+            dev.display_name = val;
+            if (window.pywebview && window.pywebview.api) {
+              window.pywebview.api.save_device_name(dev.ip, val).catch(() => {});
+            }
           }
+        } catch (err) {
+          showToast(`Rename failed: ${err.message}`, "error");
         }
-      } catch (err) {
-        showToast(`Rename failed: ${err.message}`, "error");
       }
     }
     renderDevicesTable();
@@ -420,12 +506,16 @@ function startInlineRename(nameEl, mac) {
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
-      commit();
+      e.preventDefault();
+      finish(true);
     } else if (e.key === "Escape") {
-      renderDevicesTable();
+      e.preventDefault();
+      finish(false);
     }
   });
-  input.addEventListener("blur", commit);
+  input.addEventListener("blur", () => {
+    finish(true);
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -546,7 +636,7 @@ function renderSitesList() {
     li.className = "site-item";
     li.innerHTML = `
       <span class="site-domain" title="Click to copy">${escapeHtml(site.domain)}</span>
-      <span class="site-time">${escapeHtml(site.timestamp || "")}</span>
+      <span class="site-time">${escapeHtml(formatTimestamp(site.timestamp))}</span>
     `;
     li.querySelector(".site-domain").addEventListener("click", () => {
       copyToClipboard(site.domain, "Domain copied");
@@ -567,8 +657,9 @@ function copyToClipboard(text, message = "Copied to clipboard") {
 }
 
 function escapeHtml(str) {
-  if (!str) return "";
-  return str.replace(/[&<>"']/g, function (m) {
+  if (str === null || str === undefined) return "";
+  const s = String(str);
+  return s.replace(/[&<>"']/g, function (m) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m];
   });
 }
@@ -670,8 +761,16 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Speed Modal Listeners
+  const speedModal = document.getElementById("speedModal");
   document.getElementById("btnSpeedModalClose").addEventListener("click", closeSpeedLimitModal);
   document.getElementById("btnSpeedCancel").addEventListener("click", closeSpeedLimitModal);
+
+  // Close speed modal when clicking on the blurred backdrop
+  speedModal.addEventListener("click", (e) => {
+    if (e.target === speedModal) {
+      closeSpeedLimitModal();
+    }
+  });
 
   document.querySelectorAll(".btn-preset").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -690,8 +789,28 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Sites Drawer Listeners
+  const sitesDrawer = document.getElementById("sitesDrawer");
   document.getElementById("btnSitesDrawerClose").addEventListener("click", closeSitesDrawer);
   document.getElementById("sitesSearchInput").addEventListener("input", renderSitesList);
+
+  // Close sites drawer when clicking on the blurred backdrop
+  sitesDrawer.addEventListener("click", (e) => {
+    if (e.target === sitesDrawer) {
+      closeSitesDrawer();
+    }
+  });
+
+  // Global Escape key listener to dismiss open modal/drawer
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (!speedModal.classList.contains("hidden")) {
+        closeSpeedLimitModal();
+      }
+      if (!sitesDrawer.classList.contains("hidden")) {
+        closeSitesDrawer();
+      }
+    }
+  });
 
   document.getElementById("btnCopyAllDomains").addEventListener("click", () => {
     if (!currentSitesList || currentSitesList.length === 0) return;
