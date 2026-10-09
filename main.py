@@ -557,7 +557,9 @@ def main():
 
         rust_exe = get_rust_engine_path()
         if os.path.isfile(rust_exe):
-            print(f"[MAIN] Launching Rust engine: {rust_exe}")
+            log_file_path = os.path.join(base_path, "netctrl_engine.log")
+            log_file = open(log_file_path, "a", encoding="utf-8", buffering=1)
+            print(f"[MAIN] Launching Rust engine: {rust_exe} (logging to {log_file_path})")
             # CREATE_NO_WINDOW = 0x08000000 on Windows, so no console flashes.
             creationflags = 0x08000000 if sys.platform == "win32" else 0
             rust_process = subprocess.Popen(
@@ -572,8 +574,8 @@ def main():
                     "--listen", "127.0.0.1:8765",
                 ],
                 creationflags=creationflags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
             )
             print(f"[MAIN] Rust engine PID: {rust_process.pid}")
 
@@ -610,8 +612,8 @@ def main():
                                         "--listen", "127.0.0.1:8765",
                                     ],
                                     creationflags=0x08000000 if sys.platform == "win32" else 0,
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
+                                    stdout=log_file,
+                                    stderr=subprocess.STDOUT,
                                 )
                                 # Update the outer rust_process reference
                                 rust_process = rust_process_new

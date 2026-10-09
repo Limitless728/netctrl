@@ -37,6 +37,7 @@ pub struct Device {
 struct DeviceInner {
     ip: String,
     mac: String,
+    mac_bytes: [u8; 6],
     name: String,
     /// Resolved display name (NetBIOS/mDNS/json). None = not yet resolved.
     display_name: Option<String>,
@@ -66,6 +67,7 @@ pub struct DeviceRegistry {
     start_instant: Instant,
 }
 
+#[allow(dead_code)]
 impl DeviceRegistry {
     pub fn new() -> Self {
         Self {
@@ -90,9 +92,12 @@ impl DeviceRegistry {
             return false;
         }
 
+        let mac_bytes = crate::l2_forwarder::parse_mac_to_bytes(&mac_lower).unwrap_or([0u8; 6]);
+
         let dev = DeviceInner {
             ip: ip.to_string(),
             mac: mac_lower.clone(),
+            mac_bytes,
             name: if name.is_empty() {
                 "Unknown".to_string()
             } else {
@@ -106,7 +111,7 @@ impl DeviceRegistry {
             prev_ul: AtomicU64::new(0),
             dl_speed: 0.0,
             ul_speed: 0.0,
-            is_monitored: !is_local, // local device is never monitored
+            is_monitored: false, // New devices start un-monitored until toggled by user
             display_name: None,
             unmonitored_at: None,
             is_blocked: false,
@@ -136,6 +141,37 @@ impl DeviceRegistry {
     // ------------------------------------------------------------------
     // Lookups
     // ------------------------------------------------------------------
+
+    pub fn update_ip_if_changed(&self, mac: &str, new_ip: &str) {
+        // Only accept private IPv4 addresses (e.g. 192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+        // Never allow public Internet WAN IPs (e.g. 41.129.x.x) to overwrite LAN device IP!
+        if let Ok(ip) = new_ip.parse::<std::net::Ipv4Addr>() {
+            if !ip.is_private() {
+                return;
+            }
+        } else {
+            return;
+        }
+
+        let mac_lower = mac.to_lowercase();
+        {
+            let devices = self.devices.read().unwrap();
+            if let Some(dev) = devices.get(&mac_lower) {
+                if dev.ip == new_ip {
+                    return;
+                }
+            } else {
+                return;
+            }
+        }
+        let mut devices = self.devices.write().unwrap();
+        if let Some(dev) = devices.get_mut(&mac_lower) {
+            if dev.ip != new_ip {
+                println!("[REGISTRY] Dynamic IP update for {}: {} -> {}", mac_lower, dev.ip, new_ip);
+                dev.ip = new_ip.to_string();
+            }
+        }
+    }
 
     pub fn get_by_mac(&self, mac: &str) -> Option<Device> {
         let mac_lower = mac.to_lowercase();
@@ -196,6 +232,32 @@ impl DeviceRegistry {
         false
     }
 
+    pub fn check_forward_outbound(&self, source_mac_str: &str, ip_src: &str) -> Option<(String, bool)> {
+        let mac_lower = source_mac_str.to_lowercase();
+        let devices = self.devices.read().unwrap();
+        let d = devices.get(&mac_lower).or_else(|| {
+            devices.values().find(|dev| dev.ip == ip_src)
+        })?;
+
+        let in_grace = d.unmonitored_at.map_or(false, |at| at.elapsed().as_secs_f64() < 5.0);
+        if d.is_monitored || in_grace {
+            Some((d.mac.clone(), d.is_blocked))
+        } else {
+            None
+        }
+    }
+
+    pub fn check_forward_inbound(&self, ip_dst: &str) -> Option<(String, [u8; 6], bool)> {
+        let devices = self.devices.read().unwrap();
+        let d = devices.values().find(|dev| dev.ip == ip_dst)?;
+        let in_grace = d.unmonitored_at.map_or(false, |at| at.elapsed().as_secs_f64() < 5.0);
+        if d.is_monitored || in_grace {
+            Some((d.mac.clone(), d.mac_bytes, d.is_blocked))
+        } else {
+            None
+        }
+    }
+
     // ------------------------------------------------------------------
     // State toggling
     // ------------------------------------------------------------------
@@ -245,9 +307,20 @@ impl DeviceRegistry {
 
     pub fn allow_packet(&self, mac: &str, size: u64) -> bool {
         let mac_lower = mac.to_lowercase();
+        // Fast-path: Check with read lock first if there is even a speed limit!
+        {
+            let devices = self.devices.read().unwrap();
+            let Some(d) = devices.get(&mac_lower) else {
+                return true;
+            };
+            if d.speed_limit.is_none() {
+                return true;
+            }
+        }
+
         let mut devices = self.devices.write().unwrap();
         let Some(d) = devices.get_mut(&mac_lower) else {
-            return false;
+            return true;
         };
 
         let limit = match d.speed_limit {
@@ -416,7 +489,7 @@ impl DeviceRegistry {
         let devices = self.devices.read().unwrap();
         if let Some(d) = devices.get(&mac_lower) {
             let tracker = d.visited_sites.lock().unwrap();
-            tracker.history.iter().cloned().collect()
+            tracker.history.iter().rev().cloned().collect()
         } else {
             Vec::new()
         }

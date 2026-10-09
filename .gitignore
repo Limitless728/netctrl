@@ -5,10 +5,13 @@ rust_engine/target/
 target/
 rust_engine.exe
 *.exe
+!NetCtrl_Setup.exe
 build/
 build_pkg/
+build_temp/
 dist/
 dist_release/
+*.log
 *.spec
 .vscode/
 .idea/

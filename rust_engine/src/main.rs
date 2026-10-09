@@ -22,6 +22,13 @@ mod scanner;
 mod server;
 mod spoofer;
 
+#[cfg(target_os = "windows")]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+    fn timeEndPeriod(uPeriod: u32) -> u32;
+}
+
 // ------------------------------------------------------------------
 // Gateway MAC auto-resolution (mirrors Python detect_context)
 // ------------------------------------------------------------------
@@ -197,7 +204,7 @@ struct Args {
     subnet: String,
 
     /// ARP poison interval in milliseconds
-    #[arg(long, default_value = "2000")]
+    #[arg(long, default_value = "1000")]
     arp_interval: u64,
 }
 
@@ -213,6 +220,10 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+    #[cfg(target_os = "windows")]
+    unsafe {
+        timeBeginPeriod(1);
+    }
 
     // ---- Interface selection (Feature #5) ----
     // 1. Try the --interface argument directly as a pcap device name.
@@ -407,7 +418,7 @@ async fn main() {
     let server_state = server::AppState {
         spoofer: spoofer.clone(),
         forwarder: forwarder.clone(),
-        scanner: scanner_arc,
+        scanner: scanner_arc.clone(),
         gateway_mac: gateway_mac.clone(),
         interface: actual_iface.clone(),
         local_ip: args.ip.clone(),
@@ -417,6 +428,8 @@ async fn main() {
     let server_handle = tokio::spawn(async move {
         server::run_server(listen_addr, server_state).await;
     });
+
+
 
     // ---- 6. Wait for Ctrl+C ----
     println!("[MAIN] Engine running. Press Ctrl+C to stop.");
@@ -462,4 +475,8 @@ async fn main() {
     }
 
     println!("[MAIN] Shutdown complete. Goodbye.");
+    #[cfg(target_os = "windows")]
+    unsafe {
+        timeEndPeriod(1);
+    }
 }

