@@ -199,6 +199,10 @@ struct Args {
     #[arg(short, long, default_value = "127.0.0.1:8765")]
     listen: String,
 
+    /// Required per-run Bearer token for the local HTTP API
+    #[arg(long, env = "NETCTRL_API_TOKEN")]
+    api_token: String,
+
     /// Subnet prefix (first three octets) for ARP scan
     #[arg(long, default_value = "192.168.1")]
     subnet: String,
@@ -220,6 +224,10 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+    if args.api_token.len() < 32 {
+        eprintln!("[MAIN] --api-token is required and must be at least 32 characters.");
+        std::process::exit(2);
+    }
     #[cfg(target_os = "windows")]
     unsafe {
         timeBeginPeriod(1);
@@ -424,6 +432,7 @@ async fn main() {
         local_ip: args.ip.clone(),
         local_mac: args.mac.clone(),
         gateway_ip: args.gateway_ip.clone(),
+        api_token: args.api_token.clone(),
     };
     let server_handle = tokio::spawn(async move {
         server::run_server(listen_addr, server_state).await;

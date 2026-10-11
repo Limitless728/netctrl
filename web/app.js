@@ -4,6 +4,14 @@
  */
 
 const API_BASE = "http://127.0.0.1:8765";
+const API_TOKEN_PROMISE = new Promise((resolve) => {
+  const readToken = async () => {
+    try { resolve(await window.pywebview.api.get_api_token()); }
+    catch (_) { resolve(""); }
+  };
+  if (window.pywebview && window.pywebview.api) readToken();
+  else window.addEventListener("pywebviewready", readToken, { once: true });
+});
 
 // Traffic history for sparkline canvas graphs (mac -> array of speeds)
 const trafficHistory = new Map();
@@ -250,15 +258,17 @@ function showToast(message, type = "info") {
 // API Client
 // -----------------------------------------------------------------------------
 async function apiGet(endpoint) {
-  const res = await fetch(`${API_BASE}${endpoint}`, { cache: "no-store" });
+  const token = await API_TOKEN_PROMISE;
+  const res = await fetch(`${API_BASE}${endpoint}`, { cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
 
 async function apiPost(endpoint, data = {}) {
+  const token = await API_TOKEN_PROMISE;
   const res = await fetch(`${API_BASE}${endpoint}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);

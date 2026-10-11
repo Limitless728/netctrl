@@ -25,12 +25,17 @@ class DashboardBridge:
 
     def __init__(self, local_ip: str, local_mac: str,
                  gateway_ip: str, gateway_mac: str,
-                 backend_label: str = ""):
+                 backend_label: str = "", api_token: str = ""):
         self.local_ip = local_ip
         self.local_mac = local_mac
         self.gateway_ip = gateway_ip
         self.gateway_mac = gateway_mac
         self.backend_label = backend_label
+        self._api_token = api_token
+
+    def get_api_token(self) -> str:
+        """Return the per-run token only to the local desktop WebView."""
+        return self._api_token
 
     def get_context(self) -> dict:
         """Return host network parameters for the webview UI."""
@@ -85,7 +90,7 @@ def run_web_gui(local_ip: str, local_mac: str,
                 gateway_ip: str, gateway_mac: str,
                 backend_label: str = "",
                 rust_process: Any = None,
-                health_queue: Any = None):
+                health_queue: Any = None, api_token: str = ""):
     """Launch the PyWebView modern dashboard window."""
     if not WEBVIEW_AVAILABLE:
         print("[GUI-WEB] pywebview not installed, falling back to Tkinter GUI...")
@@ -116,6 +121,7 @@ def run_web_gui(local_ip: str, local_mac: str,
         gateway_ip=gateway_ip,
         gateway_mac=gateway_mac,
         backend_label=backend_label,
+        api_token=api_token,
     )
 
     title = "NetCtrl Pro  –  Layer-2 Network Manager"
@@ -135,7 +141,7 @@ def run_web_gui(local_ip: str, local_mac: str,
     def on_closing():
         print("[GUI-WEB] Window close requested — executing atomic LAN restore...")
         try:
-            req = urllib.request.Request("http://127.0.0.1:8765/api/restore-all", method="POST")
+            req = urllib.request.Request("http://127.0.0.1:8765/api/restore-all", method="POST", headers={"Authorization": f"Bearer {api_token}"})
             with urllib.request.urlopen(req, timeout=2.0) as resp:
                 print(f"[GUI-WEB] Restore-all API replied: {resp.status}")
         except Exception as e:
