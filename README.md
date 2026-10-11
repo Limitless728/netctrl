@@ -68,7 +68,7 @@ python main.py --rust --classic-gui
 * **Dual Architecture Engine:**
   * **Rust High-Throughput Engine:** Token-bucket rate limiting, sub-millisecond layer-2 packet forwarding, zero packet drops under load.
   * **Python Fallback Engine:** Pure-Python implementation if running without the compiled binary.
-* **Local HTTP REST API:** Rust backend operates on `http://127.0.0.1:8765`, enabling scriptable network control and dashboard communication.
+* **Local HTTP REST API:** Binds to `127.0.0.1:8765` and requires a fresh, per-launch Bearer token; the token is passed only through the desktop UI bridge and is not logged or persisted. Cross-origin requests from arbitrary websites are rejected.
 * **DNS Inspection & Domain Logging:** Inspects outgoing port 53 DNS queries to provide a visited website history per target host.
 * **Automatic Gateway & Local Host Protection:** Your local machine is permanently identified, pinned at the top, and protected against accidental blocking or rate-limiting.
 
@@ -86,7 +86,7 @@ python main.py --rust --classic-gui
 
 ### ⚡ Quick Install (Zero Dependencies — Recommended)
 For immediate plug-and-play installation without manually installing Python, Rust, or configuring drivers:
-1. Download **`NetCtrl_Setup.exe`** directly from the repository / releases.
+1. Download **`NetCtrl_Setup.exe`** from the [GitHub Releases](https://github.com/Limitless728/netctrl/releases) page. The installer is not stored in the source tree.
 2. Run `NetCtrl_Setup.exe` as Administrator.
 3. The setup automatically installs the required Npcap driver in WinPcap-compatible mode, extracts all core components, and creates a desktop shortcut.
 4. Launch NetCtrl directly!
@@ -106,8 +106,8 @@ If you already have Npcap installed and prefer a single portable `.exe` without 
 
 #### 1. Clone the repository:
 ```bash
-git clone https://github.com/Ahmed-Eissa-0/NetCtrl.git
-cd NetCtrl
+git clone https://github.com/Limitless728/netctrl.git
+cd netctrl
 ```
 
 #### 2. Install Python dependencies:
@@ -200,7 +200,7 @@ netctrl/
 | **Gateway MAC shows `--` or `??`** | Make sure you are running as **Administrator**. NetCtrl needs raw socket access. |
 | **No devices discovered** | Click **Rescan LAN**. Ensure you picked the correct network interface during initial setup. You can reset your interface in `netctrl_config.json`. |
 | **"Npcap not found" / Packet errors** | Reinstall Npcap from [npcap.com](https://npcap.com) and ensure **"WinPcap API-compatible Mode"** is checked. |
-| **Antivirus false positive** | Because NetCtrl crafts low-level ARP frames for network administration, some heuristics may flag the standalone executable. This is normal for network tools like Wireshark/SelfishNet. Add `NetCtrl.exe` to exclusions or build from source. |
+| **Antivirus false positive** | Network administration tools that craft ARP frames may trigger heuristic detections. Download only from the official [GitHub Releases](https://github.com/Limitless728/netctrl/releases) page, verify the checksum when published, and report false positives to the antivirus vendor. Do not disable protections or add broad exclusions. |
 
 ---
 

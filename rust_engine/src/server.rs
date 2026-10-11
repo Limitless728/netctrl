@@ -17,13 +17,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Json;
 use serde::Deserialize;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 
 use crate::device_registry::REGISTRY;
 
@@ -53,6 +53,8 @@ pub struct AppState {
     pub local_mac: String,
     /// Gateway IP address
     pub gateway_ip: String,
+    /// Per-process secret required by every API request.
+    pub api_token: String,
 }
 
 // ------------------------------------------------------------------
@@ -96,10 +98,12 @@ pub async fn run_server(
 ) {
     let shared = Arc::new(state);
 
+    // The dashboard is loaded from a local file (Origin: null). Do not allow
+    // arbitrary websites to make cross-origin requests to the local API.
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(HeaderValue::from_static("null"))
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = axum::Router::new()
         .route("/api/devices", get(handle_get_devices))
@@ -113,6 +117,7 @@ pub async fn run_server(
         .route("/api/set-name", post(handle_set_name))
         .route("/api/sites/:mac", get(handle_get_sites))
         .route("/api/sites/:mac/clear", post(handle_clear_sites))
+        .layer(axum::middleware::from_fn_with_state(shared.clone(), require_auth))
         .layer(axum::middleware::from_fn(log_requests))
         .layer(cors)
         .with_state(shared);
@@ -139,6 +144,23 @@ pub async fn run_server(
         .unwrap_or_else(|e| eprintln!("[SERVER] !! serve error: {}", e));
 
     println!("[SERVER] HTTP server stopped.");
+}
+
+async fn require_auth(
+    State(state): State<Arc<AppState>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let expected = format!("Bearer {}", state.api_token);
+    let supplied = req.headers().get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if supplied != Some(expected.as_str()) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({
+            "ok": false,
+            "error": "missing or invalid bearer token"
+        }))).into_response();
+    }
+    next.run(req).await
 }
 
 // ------------------------------------------------------------------

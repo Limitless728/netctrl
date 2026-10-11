@@ -33,6 +33,31 @@ from device_registry import REGISTRY
 # Filled in by main.py before start() is called.
 SPOOFER = None      # type: Optional[object]    (spoofer.Spoofer)
 SCANNER = None      # type: Optional[object]    (scanner.Scanner)
+API_TOKEN = ""
+
+@web.middleware
+async def security_middleware(request: web.Request, handler):
+    origin = request.headers.get("Origin", "")
+    if request.method == "OPTIONS":
+        if origin != "null":
+            return web.Response(status=403)
+        response = web.Response(status=204)
+        response.headers.update({
+            "Access-Control-Allow-Origin": "null",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type",
+            "Vary": "Origin",
+        })
+        return response
+    if origin and origin != "null":
+        return web.json_response({"ok": False, "error": "origin not allowed"}, status=403)
+    if not API_TOKEN or request.headers.get("Authorization") != f"Bearer {API_TOKEN}":
+        return web.json_response({"ok": False, "error": "missing or invalid bearer token"}, status=401)
+    response = await handler(request)
+    if origin == "null":
+        response.headers["Access-Control-Allow-Origin"] = "null"
+        response.headers["Vary"] = "Origin"
+    return response
 
 
 # ----------------------------------------------------------------------
@@ -220,7 +245,7 @@ async def set_speed_limit(request: web.Request) -> web.Response:
 # Server bootstrap
 # ----------------------------------------------------------------------
 def build_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[security_middleware])
     app.router.add_get ("/api/health",  health)
     app.router.add_get ("/api/devices", list_devices)
     app.router.add_post("/api/monitor", toggle_monitor)

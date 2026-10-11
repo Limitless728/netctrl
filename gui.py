@@ -41,6 +41,7 @@ from typing import Any, Optional
 import subprocess
 
 API = "http://127.0.0.1:8765"
+API_TOKEN = ""
 REFRESH_MS = 1000
 
 
@@ -50,7 +51,7 @@ REFRESH_MS = 1000
 def _http_get(path: str, timeout: float = 2.0):
     """Blocking helper – always called from a worker thread."""
     url = API + path
-    req = urllib.request.Request(url, method="GET")
+    req = urllib.request.Request(url, method="GET", headers={"Authorization": f"Bearer {API_TOKEN}"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
@@ -69,7 +70,7 @@ def _http_post(path: str, body: dict, timeout: float = 2.0):
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {API_TOKEN}"},
         method="POST",
     )
     try:
@@ -1038,6 +1039,8 @@ def run_gui(local_ip: str, local_mac: str,
             gateway_ip: str, gateway_mac: str,
             backend_label: str = "",
             rust_process: Any = None,
-            health_queue: Any = None) -> None:
+            health_queue: Any = None, api_token: str = "") -> None:
+    global API_TOKEN
+    API_TOKEN = api_token
     app = App(local_ip, local_mac, gateway_ip, gateway_mac, backend_label, rust_process, health_queue)
     app.mainloop()

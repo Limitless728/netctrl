@@ -35,6 +35,7 @@ import ipaddress
 import json
 import os
 import queue
+import secrets
 import re
 import shutil
 import socket
@@ -55,6 +56,9 @@ try:
 except ImportError:
     run_web_gui = run_gui
     HAS_WEB_GUI = False
+
+# Fresh secret per application launch; never logged or persisted.
+API_TOKEN = secrets.token_urlsafe(32)
 
 # ---- Conditionally import the Python-native engine components ----
 # (They are NOT needed when the Rust binary handles everything.)
@@ -574,6 +578,7 @@ def main():
                     "--listen", "127.0.0.1:8765",
                 ],
                 creationflags=creationflags,
+                env={**os.environ, "NETCTRL_API_TOKEN": API_TOKEN},
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -612,6 +617,7 @@ def main():
                                         "--listen", "127.0.0.1:8765",
                                     ],
                                     creationflags=0x08000000 if sys.platform == "win32" else 0,
+                                    env={**os.environ, "NETCTRL_API_TOKEN": API_TOKEN},
                                     stdout=log_file,
                                     stderr=subprocess.STDOUT,
                                 )
@@ -638,7 +644,7 @@ def main():
         while rust_process is not None and waited < 10:
             try:
                 import urllib.request
-                req = urllib.request.Request("http://127.0.0.1:8765/api/devices", method="GET")
+                req = urllib.request.Request("http://127.0.0.1:8765/api/devices", method="GET", headers={"Authorization": f"Bearer {API_TOKEN}"})
                 with urllib.request.urlopen(req, timeout=1.0) as r:
                     r.read()
                 print(f"[MAIN] Rust API responded after {waited}s")
@@ -674,6 +680,7 @@ def main():
         # ---- Wire the API server to the live engine instances ----
         api_server.SPOOFER = spoofer
         api_server.SCANNER = scanner
+        api_server.API_TOKEN = API_TOKEN
 
         # ---- Start everything ----
         forwarder.start()           # sniffer with anti-loop BPF must be up FIRST
@@ -697,6 +704,7 @@ def main():
                 backend_label = backend_label,
                 rust_process  = rust_process,
                 health_queue  = health_queue,
+                api_token     = API_TOKEN,
             )
         else:
             run_web_gui(
@@ -707,6 +715,7 @@ def main():
                 backend_label = backend_label,
                 rust_process  = rust_process,
                 health_queue  = health_queue,
+                api_token     = API_TOKEN,
             )
     except KeyboardInterrupt:
         print("[MAIN] Ctrl-C received")
