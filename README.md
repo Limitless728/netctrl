@@ -200,6 +200,7 @@ netctrl/
 | **Gateway MAC shows `--` or `??`** | Make sure you are running as **Administrator**. NetCtrl needs raw socket access. |
 | **No devices discovered** | Click **Rescan LAN**. Ensure you picked the correct network interface during initial setup. You can reset your interface in `netctrl_config.json`. |
 | **"Npcap not found" / Packet errors** | Reinstall Npcap from [npcap.com](https://npcap.com) and ensure **"WinPcap API-compatible Mode"** is checked. |
+| **HTTP 401 / 403 API Error** | All REST API requests require a per-launch Bearer token (`NETCTRL_API_TOKEN`) passed via `Authorization: Bearer <token>` and are restricted to the local WebView `null` Origin. If sending custom API calls, pass the active token generated on launch. |
 | **Antivirus false positive** | Network administration tools that craft ARP frames may trigger heuristic detections. Download only from the official [GitHub Releases](https://github.com/Limitless728/netctrl/releases) page, verify the checksum when published, and report false positives to the antivirus vendor. Do not disable protections or add broad exclusions. |
 
 ---
