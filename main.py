@@ -519,8 +519,105 @@ def get_rust_engine_path():
         return os.path.join(os.path.dirname(__file__), 'rust_engine.exe')
 
 
+def kill_existing_engine_instances():
+    """Ensure any stale rust_engine.exe processes are terminated and port 8765 is released."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "rust_engine.exe"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except Exception:
+            pass
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.1)
+            res = s.connect_ex(("127.0.0.1", 8765))
+            if res != 0:
+                break
+        time.sleep(0.1)
+
+
+def setup_process_job():
+    """Create a Windows Job Object configured to kill all child processes when this process exits."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_ulonglong),
+                ("WriteOperationCount", ctypes.c_ulonglong),
+                ("OtherOperationCount", ctypes.c_ulonglong),
+                ("ReadTransferCount", ctypes.c_ulonglong),
+                ("WriteTransferCount", ctypes.c_ulonglong),
+                ("OtherTransferCount", ctypes.c_ulonglong),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryLimit", ctypes.c_size_t),
+                ("PeakJobMemoryLimit", ctypes.c_size_t),
+            ]
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        JobObjectExtendedLimitInformation = 9
+        res = kernel32.SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        )
+        if res:
+            return job
+        else:
+            kernel32.CloseHandle(job)
+            return None
+    except Exception as e:
+        print(f"[MAIN] Warning: could not configure job object: {e}")
+        return None
+
+
+def assign_to_job(job, proc):
+    if not job or sys.platform != "win32" or proc is None:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.AssignProcessToJobObject(job, int(proc._handle))
+    except Exception:
+        pass
+
+
 # ----------------------------------------------------------------------
 def main():
+    # Clean up any leftover processes from previous crashes/runs
+    kill_existing_engine_instances()
+    proc_job = setup_process_job()
+
     # ---- Dynamic engine selection ----
     use_rust = getattr(sys, "frozen", False) or "--rust" in sys.argv
     backend_label = "(Rust Backend)" if use_rust else "(Python Backend)"
@@ -576,12 +673,14 @@ def main():
                     "--gateway-mac", ctx["gateway_mac"],
                     "--subnet", ctx.get("subnet", "192.168.1"),
                     "--listen", "127.0.0.1:8765",
+                    "--parent-pid", str(os.getpid()),
                 ],
                 creationflags=creationflags,
                 env={**os.environ, "NETCTRL_API_TOKEN": API_TOKEN},
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
+            assign_to_job(proc_job, rust_process)
             print(f"[MAIN] Rust engine PID: {rust_process.pid}")
 
             # ---- Health check daemon ----
@@ -615,12 +714,14 @@ def main():
                                         "--gateway-mac", ctx["gateway_mac"],
                                         "--subnet", ctx.get("subnet", "192.168.1"),
                                         "--listen", "127.0.0.1:8765",
+                                        "--parent-pid", str(os.getpid()),
                                     ],
                                     creationflags=0x08000000 if sys.platform == "win32" else 0,
                                     env={**os.environ, "NETCTRL_API_TOKEN": API_TOKEN},
                                     stdout=log_file,
                                     stderr=subprocess.STDOUT,
-                                )
+                                    )
+                                assign_to_job(proc_job, rust_process_new)
                                 # Update the outer rust_process reference
                                 rust_process = rust_process_new
                                 print(f"[MAIN] Rust engine restarted, new PID: {rust_process.pid}")
@@ -722,6 +823,17 @@ def main():
     finally:
         # Signal health check thread to stop, then wait briefly
         _stop_health_check.set()
+        # Terminate Rust engine process if running
+        if rust_process is not None:
+            try:
+                rust_process.terminate()
+                try:
+                    rust_process.wait(timeout=1.5)
+                except Exception:
+                    rust_process.kill()
+            except Exception as e:
+                print(f"[MAIN] rust_process termination error: {e}")
+
         # Cleanup is what keeps the LAN healthy after we exit.
         print("[MAIN] shutting down ...")
         if spoofer is not None:

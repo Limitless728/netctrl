@@ -126,13 +126,31 @@ pub async fn run_server(
         "[SERVER] Registered routes: GET /api/devices, GET /api/health, GET /api/status, POST /api/monitor, POST /api/scan, POST /api/block, POST /api/speed, POST /api/restore-all, POST /api/set-name"
     );
 
-    let listener = match tokio::net::TcpListener::bind(listen_addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[SERVER] !! Failed to bind {}: {}", listen_addr, e);
-            return;
+    let mut listener = None;
+    for attempt in 1..=10 {
+        match tokio::net::TcpListener::bind(listen_addr).await {
+            Ok(l) => {
+                listener = Some(l);
+                break;
+            }
+            Err(e) => {
+                if attempt < 10 {
+                    eprintln!(
+                        "[SERVER] Bind attempt {}/10 to {} failed: {}. Retrying in 500ms...",
+                        attempt, listen_addr, e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                } else {
+                    eprintln!(
+                        "[SERVER] !! FATAL: Failed to bind {} after 10 attempts: {}",
+                        listen_addr, e
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
-    };
+    }
+    let listener = listener.unwrap();
 
     println!(
         "[SERVER] Listening on http://{} (endpoints: /api/devices /api/health /api/monitor /api/scan /api/block /api/speed /api/restore-all)",

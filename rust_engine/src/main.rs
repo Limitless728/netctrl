@@ -210,6 +210,10 @@ struct Args {
     /// ARP poison interval in milliseconds
     #[arg(long, default_value = "1000")]
     arp_interval: u64,
+
+    /// Optional parent process ID to monitor. If the parent dies, engine terminates.
+    #[arg(long)]
+    parent_pid: Option<u32>,
 }
 
 // ------------------------------------------------------------------
@@ -228,6 +232,39 @@ async fn main() {
         eprintln!("[MAIN] --api-token is required and must be at least 32 characters.");
         std::process::exit(2);
     }
+
+    if let Some(ppid) = args.parent_pid {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                #[cfg(target_os = "windows")]
+                {
+                    #[link(name = "kernel32")]
+                    extern "system" {
+                        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> isize;
+                        fn CloseHandle(hObject: isize) -> i32;
+                        fn GetExitCodeProcess(hProcess: isize, lpExitCode: *mut u32) -> i32;
+                    }
+                    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+                    const STILL_ACTIVE: u32 = 259;
+
+                    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, ppid) };
+                    if handle == 0 {
+                        eprintln!("[MAIN] Parent process PID {} is no longer running. Exiting engine.", ppid);
+                        std::process::exit(0);
+                    }
+                    let mut exit_code: u32 = 0;
+                    let success = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+                    unsafe { CloseHandle(handle) };
+                    if success != 0 && exit_code != STILL_ACTIVE {
+                        eprintln!("[MAIN] Parent process PID {} exited (code {}). Exiting engine.", ppid, exit_code);
+                        std::process::exit(0);
+                    }
+                }
+            }
+        });
+    }
+
     #[cfg(target_os = "windows")]
     unsafe {
         timeBeginPeriod(1);
