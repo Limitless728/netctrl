@@ -98,11 +98,27 @@ pub async fn run_server(
 ) {
     let shared = Arc::new(state);
 
-    // The dashboard is loaded from a local file (Origin: null). Do not allow
-    // arbitrary websites to make cross-origin requests to the local API.
+    // Allow local origins (WebView file:// / null, localhost, 127.0.0.1 on any port, custom webview schemes).
+    // Do not allow arbitrary external websites to make cross-origin requests to the local API.
     let cors = CorsLayer::new()
-        .allow_origin(HeaderValue::from_static("null"))
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            |origin: &HeaderValue, _parts: &axum::http::request::Parts| -> bool {
+                if let Ok(s) = origin.to_str() {
+                    s == "null"
+                        || s.starts_with("http://127.0.0.1")
+                        || s.starts_with("http://localhost")
+                        || s.starts_with("https://pywebview.api")
+                        || s.starts_with("https://appassets.html")
+                } else {
+                    false
+                }
+            },
+        ))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::OPTIONS,
+        ])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]);
 
     let app = axum::Router::new()

@@ -5,12 +5,40 @@
 
 const API_BASE = "http://127.0.0.1:8765";
 const API_TOKEN_PROMISE = new Promise((resolve) => {
-  const readToken = async () => {
-    try { resolve(await window.pywebview.api.get_api_token()); }
-    catch (_) { resolve(""); }
+  let resolved = false;
+  const tryRead = async () => {
+    if (resolved) return;
+    try {
+      if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.get_api_token === "function") {
+        const token = await window.pywebview.api.get_api_token();
+        resolved = true;
+        resolve(token);
+        return;
+      }
+    } catch (_) {}
   };
-  if (window.pywebview && window.pywebview.api) readToken();
-  else window.addEventListener("pywebviewready", readToken, { once: true });
+
+  // 1. Try immediately
+  tryRead();
+
+  // 2. Listen to pywebviewready
+  window.addEventListener("pywebviewready", tryRead, { once: true });
+
+  // 3. Fallback poll up to 5 seconds
+  const interval = setInterval(async () => {
+    if (resolved) {
+      clearInterval(interval);
+      return;
+    }
+    await tryRead();
+  }, 100);
+
+  setTimeout(() => {
+    if (!resolved) {
+      clearInterval(interval);
+      resolve("");
+    }
+  }, 5000);
 });
 
 // Traffic history for sparkline canvas graphs (mac -> array of speeds)

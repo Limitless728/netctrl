@@ -38,24 +38,32 @@ API_TOKEN = ""
 @web.middleware
 async def security_middleware(request: web.Request, handler):
     origin = request.headers.get("Origin", "")
+    is_allowed_origin = (
+        not origin
+        or origin == "null"
+        or origin.startswith("http://127.0.0.1")
+        or origin.startswith("http://localhost")
+        or origin.startswith("https://pywebview.api")
+        or origin.startswith("https://appassets.html")
+    )
     if request.method == "OPTIONS":
-        if origin != "null":
+        if not is_allowed_origin:
             return web.Response(status=403)
         response = web.Response(status=204)
         response.headers.update({
-            "Access-Control-Allow-Origin": "null",
+            "Access-Control-Allow-Origin": origin or "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Authorization, Content-Type",
             "Vary": "Origin",
         })
         return response
-    if origin and origin != "null":
+    if origin and not is_allowed_origin:
         return web.json_response({"ok": False, "error": "origin not allowed"}, status=403)
     if not API_TOKEN or request.headers.get("Authorization") != f"Bearer {API_TOKEN}":
         return web.json_response({"ok": False, "error": "missing or invalid bearer token"}, status=401)
     response = await handler(request)
-    if origin == "null":
-        response.headers["Access-Control-Allow-Origin"] = "null"
+    if origin and is_allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
     return response
 
