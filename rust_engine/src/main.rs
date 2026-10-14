@@ -266,8 +266,22 @@ async fn main() {
     }
 
     #[cfg(target_os = "windows")]
-    unsafe {
-        timeBeginPeriod(1);
+    {
+        unsafe {
+            timeBeginPeriod(1);
+        }
+        // Ensure Windows kernel IP routing does not forward packets behind our back,
+        // which would bypass our L2 forwarder drop/throttle rules.
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object Forwarding -eq 'Enabled' | Set-NetIPInterface -Forwarding Disabled -ErrorAction SilentlyContinue",
+            ])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
     }
 
     // ---- Interface selection (Feature #5) ----

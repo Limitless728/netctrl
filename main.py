@@ -536,6 +536,39 @@ def kill_existing_engine_instances():
         time.sleep(0.1)
 
 
+def disable_windows_ip_forwarding(iface_name: str = ""):
+    """Ensure Windows kernel IP routing does not forward packets behind our back,
+    which would bypass our L2 forwarder drop and rate-limiting rules."""
+    if sys.platform != "win32":
+        return
+    try:
+        import winreg
+        key_path = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+            val, _ = winreg.QueryValueEx(key, "IPEnableRouter")
+            if val != 0:
+                winreg.SetValueEx(key, "IPEnableRouter", 0, winreg.REG_DWORD, 0)
+                print("[MAIN] Disabled IPEnableRouter in Windows Registry")
+    except Exception:
+        pass
+
+    try:
+        if iface_name:
+            subprocess.run(["netsh", "interface", "ipv4", "set", "interface", iface_name, "forwarding=disabled"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object Forwarding -eq 'Enabled' | Set-NetIPInterface -Forwarding Disabled -ErrorAction SilentlyContinue"],
+            creationflags=0x08000000,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+        print("[MAIN] Verified Windows Kernel IPv4 Forwarding is disabled on network interfaces")
+    except Exception:
+        pass
+
+
 def setup_process_job():
     """Create a Windows Job Object configured to kill all child processes when this process exits."""
     if sys.platform != "win32":
@@ -641,6 +674,9 @@ def main():
     else:
         # Use the selected interface to detect matching IP, gateway, and MAC
         ctx = detect_context(selected_iface)
+
+    # Disable Windows kernel routing on this interface so NetCtrl has exclusive forwarding/drop control
+    disable_windows_ip_forwarding(selected_iface)
 
     spoofer = None
     forwarder = None
